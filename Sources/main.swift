@@ -1,4 +1,4 @@
-// UsageMaster —— macOS 菜单栏小工具：实时显示多个 Claude 账号的订阅用量（5 小时窗口 / 每周）与 Cursor 本期用量，以及各自多久重置。
+// AI UsageMaster —— macOS 菜单栏小工具：实时显示多个 Claude 账号的订阅用量（5 小时窗口 / 每周）与 Cursor 本期用量，以及各自多久重置。
 //
 // Claude 多账号（仿 Orca 的做法，自己管理登录态）：
 //   每个账号一个独立的 Claude Code 配置目录 ~/.config/usagemaster/claude/<名字>/，用官方 `claude auth login` 登录一次
@@ -12,8 +12,8 @@
 //   令牌从 Cursor 本地 state.vscdb 只读读取。
 // 令牌只在内存与钥匙串里；网络会话不落盘（ephemeral），不打日志。
 //
-// 构建：bash build.sh   （产物 ~/Applications/UsageMaster.app；加 --login 装开机自启）
-// 终端看一次：~/Applications/UsageMaster.app/Contents/MacOS/UsageMaster --print
+// 构建：bash build.sh   （产物 ~/Applications/AI UsageMaster.app；加 --login 装开机自启）
+// 终端看一次："~/Applications/AI UsageMaster.app/Contents/MacOS/AIUsageMaster" --print
 
 
 import AppKit

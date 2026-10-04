@@ -296,7 +296,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard let accounts = claude, claudeErr == nil else { return }
         let (events, seen) = detectEarlyResets(previous: lastSeen, accounts: accounts, now: Date())
         lastSeen = seen
-        for ev in events { notify("UsageMaster：额度提前重置", ev); switchNote = ev }
+        for ev in events { notify("AI UsageMaster：额度提前重置", ev); switchNote = ev }
         // 用量返回里第一次出现新的额度项（官方活动 / 临时额度 / 重置额度的信号）
         for a in accounts where a.error == nil {
             let now = Set(a.extraKeys)
@@ -304,7 +304,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 let added = now.subtracting(before)
                 if !added.isEmpty {
                     let msg = "\(a.label) 的用量数据里出现新的额度项：\(added.sorted().joined(separator: "、"))（可能是官方活动或重置）"
-                    notify("UsageMaster：Claude 额度有变化", msg)
+                    notify("AI UsageMaster：Claude 额度有变化", msg)
                     switchNote = msg
                 }
             }
@@ -321,7 +321,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             switchNote = "自动切换失败：\(err)"
         } else {
             switchNote = "自动切换：\(d.reason)（\(clockFmt.string(from: Date()))）"
-            notify("UsageMaster 已切换 Claude 账号", d.reason)
+            notify("AI UsageMaster 已切换 Claude 账号", d.reason)
             refresh()
         }
     }
@@ -363,5 +363,5 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc func quit() { NSApp.terminate(nil) }
 }
 
-// 命令行模式：UsageMaster --print  拉一次数据，把菜单里的内容打印到终端后退出（不含任何令牌）
-// 自检：UsageMaster --selftest  用构造数据验证自动切换规则
+// 命令行模式：AIUsageMaster --print  拉一次数据，把菜单里的内容打印到终端后退出（不含任何令牌）
+// 自检：AIUsageMaster --selftest  用构造数据验证自动切换规则

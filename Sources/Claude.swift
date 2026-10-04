@@ -220,7 +220,7 @@ func usageRequest(token: String) -> URLRequest {
     req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
     req.setValue("oauth-2025-04-20", forHTTPHeaderField: "anthropic-beta")
     req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-    req.setValue("UsageMaster/1.0", forHTTPHeaderField: "User-Agent")
+    req.setValue("AIUsageMaster/1.0", forHTTPHeaderField: "User-Agent")
     return req
 }
 
@@ -344,7 +344,7 @@ func openLoginTerminal(configDir: String) {
     export CLAUDE_CONFIG_DIR='\(configDir)'
     export BROWSER='\(browserPath)'
     mkdir -p "$CLAUDE_CONFIG_DIR"
-    echo "UsageMaster：给菜单栏添加一个 Claude 账号"
+    echo "AI UsageMaster：给菜单栏添加一个 Claude 账号"
     echo "授权页会在 \(hasChrome ? "Chrome 无痕窗口" : "Safari") 里打开：在那里用你要添加的账号（邮箱）登录，然后点授权。"
     echo "如果打开的是普通窗口、里面已经是别的账号：复制下面打印的链接，按 ⌘⇧N 开无痕窗口粘贴打开。"
     echo

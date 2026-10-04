@@ -1,8 +1,10 @@
-# UsageMaster
+# AI UsageMaster
 
-macOS 菜单栏小工具：同时显示多个 Claude 账号和 Cursor 的用量、离重置还有多久，点一下就能切换 `claude` 命令行用哪个账号，也可以让它按用量自动切换。
+**AI 订阅额度助手**：Claude、Cursor 等 AI 编程工具的用量、重置倒计时、多账号自动切换，都在 macOS 菜单栏上。
 
-A macOS menu bar app that shows live usage and reset countdowns for several Claude accounts and Cursor, and lets you switch (manually or automatically) which account the `claude` CLI uses. English summary at the end.
+同时显示多个 Claude 账号和 Cursor 的用量、离重置还有多久，点一下就能切换 `claude` 命令行用哪个账号，也可以让它按用量自动切换。
+
+AI UsageMaster is a macOS menu bar app that shows live usage and reset countdowns for several Claude accounts and Cursor, and lets you switch (manually or automatically) which account the `claude` CLI uses. English summary at the end.
 
 ```
 工作 23%·2h16  个人 7%w  备用 100%w  │  Cu 61%
@@ -17,18 +19,18 @@ A macOS menu bar app that shows live usage and reset countdowns for several Clau
   - 手动：点哪个用哪个，不会自动换。
 - **重置提醒**：额度在原定时间之前被提前重置、官方状态页出现和用量限制有关的公告、用量数据里出现新的额度项时，发系统通知。
 - **Cursor**：本期包含额度的花费、账单周期重置时间、团队共享额度。
-- **命令行**：`UsageMaster --print` 打印一次当前数据；`UsageMaster --selftest` 跑自动切换规则的自检。
+- **命令行**：`AIUsageMaster --print` 打印一次当前数据；`AIUsageMaster --selftest` 跑自动切换规则的自检。
 
 ## 安装
 
 需要 macOS 13 以上、Xcode 命令行工具（`xcode-select --install`），以及已经装好的 [Claude Code](https://docs.claude.com/en/docs/claude-code) 命令行。
 
 ```bash
-git clone https://github.com/wxy821018/usagemaster.git
-cd usagemaster
-bash build.sh            # 编译并安装到 ~/Applications/UsageMaster.app
+git clone https://github.com/wxy821018/ai-usagemaster.git
+cd ai-usagemaster
+bash build.sh            # 编译并安装到 ~/Applications/AI UsageMaster.app
 bash build.sh --login    # 另外设为开机自启
-open ~/Applications/UsageMaster.app
+open "$HOME/Applications/AI UsageMaster.app"
 ```
 
 取消开机自启：`launchctl bootout gui/$(id -u)/io.github.wxy821018.usagemaster && rm ~/Library/LaunchAgents/io.github.wxy821018.usagemaster.plist`
@@ -78,6 +80,6 @@ open ~/Applications/UsageMaster.app
 
 ## English summary
 
-UsageMaster is a native macOS menu bar app (Swift, no dependencies). It shows the 5-hour and weekly usage of several Claude subscription accounts plus Cursor's current billing period, with reset countdowns. Click an account to make the `claude` CLI use it, or turn on automatic switching: it moves off an account once a window reaches 99% and prefers the account whose weekly quota resets soonest. Each account is signed in once with the official `claude auth login` into its own config directory; tokens stay in the macOS Keychain and are only sent to the vendors' own HTTPS endpoints. Not affiliated with Anthropic or Cursor; the endpoints it uses are undocumented and may change.
+AI UsageMaster is a native macOS menu bar app (Swift, no dependencies). It shows the 5-hour and weekly usage of several Claude subscription accounts plus Cursor's current billing period, with reset countdowns. Click an account to make the `claude` CLI use it, or turn on automatic switching: it moves off an account once a window reaches 99% and prefers the account whose weekly quota resets soonest. Each account is signed in once with the official `claude auth login` into its own config directory; tokens stay in the macOS Keychain and are only sent to the vendors' own HTTPS endpoints. Not affiliated with Anthropic or Cursor; the endpoints it uses are undocumented and may change.
 
 Build: `bash build.sh` (add `--login` to start at login). License: MIT.
