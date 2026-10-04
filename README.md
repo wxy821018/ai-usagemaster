@@ -2,7 +2,7 @@
 
 English | [简体中文](README.zh-CN.md)
 
-**Your AI plan quotas in the macOS menu bar.** Live usage and reset countdowns for several Claude accounts and Cursor, plus one-click or automatic switching of the account your `claude` CLI uses.
+**Claude Code usage and rate limits in your macOS menu bar.** Live 5-hour and weekly usage with reset countdowns for several Claude accounts (Pro, Max, Team) and Cursor, plus one-click or automatic switching of the account your `claude` CLI uses.
 
 ```
 Work 23%·2h16  Personal 7%w  Spare 100%w  │  Cu 61%
