@@ -26,6 +26,7 @@ struct ClaudeAccount {
     var configDir: String? = nil
     var needsLogin = false
     var extraKeys: [String] = []     // 用量返回里非空的额外额度项（官方活动/临时额度的信号）
+    var warning: String? = nil       // 暂时性问题（被限流、网络断）：数字来自上次成功的缓存，仍可用
 
     /// 最紧的那个窗口（用来在菜单栏上显示）
     var binding: UsageWindow? { windows.max(by: { $0.percent < $1.percent }) }

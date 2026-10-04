@@ -13,11 +13,11 @@ struct Snapshot {
     var at: Date
 }
 
-func fetchAll() async -> Snapshot {
+func fetchAll(force: Bool = false) async -> Snapshot {
     let managed = listManagedAccounts()
     var claude: Fetch<[ClaudeAccount]>
     if managed.isEmpty {
-        switch await fetchClaudeDirect() {
+        switch await fetchClaudeDirect(force: force) {
         case .ok(let a): claude = .ok([a])
         case .err(let m): claude = .err(m)
         }
@@ -27,7 +27,7 @@ func fetchAll() async -> Snapshot {
             let cur = currentDefaultIdentity().map { $0.email + "|" + $0.orgUuid }
             for (i, a) in managed.enumerated() {
                 let isDef = cur != nil && identityKey(a) == cur
-                g.addTask { (i, await fetchManaged(a, isDefault: isDef)) }
+                g.addTask { (i, await fetchManaged(a, isDefault: isDef, force: force)) }
             }
             var out: [(Int, ClaudeAccount)] = []
             for await r in g { out.append(r) }

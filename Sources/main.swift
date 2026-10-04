@@ -38,6 +38,7 @@ if CommandLine.arguments.contains("--selftest") {
     let cases: [(String, [ClaudeAccount], String?)] = [
         ("当前 5 小时用完 → 切到最该先用的", [acc("A", active: true, s: 99.5, w: 40, wResetH: 100), acc("B", active: false, s: 10, w: 20, wResetH: 48), acc("C", active: false, s: 0, w: 0, wResetH: 120)], "/tmp/B"),
         ("当前 5 小时 98%、每周 98% → 还不算用完，且没有更该先用的 → 不切", [acc("A", active: true, s: 98, w: 98, wResetH: 20), acc("B", active: false, s: 0, w: 10, wResetH: 140)], nil),
+        ("当前账号数据取不到（被限流）→ 不切", [acc("A", active: true, s: 0, w: 0, wResetH: 100, err: "被限流（429）"), acc("B", active: false, s: 0, w: 10, wResetH: 24)], nil),
         ("当前每周用完 → 切", [acc("A", active: true, s: 10, w: 99, wResetH: 100), acc("B", active: false, s: 0, w: 50, wResetH: 140)], "/tmp/B"),
         ("当前能用，B 早 5 天重置且有余量 → 先用 B", [acc("A", active: true, s: 10, w: 50, wResetH: 144), acc("B", active: false, s: 0, w: 30, wResetH: 24)], "/tmp/B"),
         ("当前能用，B 只早 6 小时 → 不切", [acc("A", active: true, s: 10, w: 50, wResetH: 30), acc("B", active: false, s: 0, w: 30, wResetH: 24)], nil),

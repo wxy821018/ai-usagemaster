@@ -77,13 +77,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    func refresh() {
+    func refresh(force: Bool = false) {
         // 防卡死：上一轮超过 60 秒还没回来就当它丢了
         if fetching, let s = fetchStartedAt, Date().timeIntervalSince(s) < 60 { return }
         fetching = true
         fetchStartedAt = Date()
         Task {
-            let s = await fetchAll()
+            let s = await fetchAll(force: force)
             switch s.claude {
             case .ok(let a): self.claude = a; self.claudeOKAt = s.at; self.claudeErr = nil
             case .err(let m): self.claudeErr = m
@@ -206,6 +206,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 menu.addItem(hi)
                 if !a.org.isEmpty { line("  \(a.org)", small: true) }
                 if let e = a.error { line("  ⚠︎ \(e)", .systemOrange) }
+                if let w = a.warning, a.error == nil { line("  ⚠︎ \(w)（下面是 \(ago(a.updatedAt, now: now)) 的数据）", .secondaryLabelColor, small: true) }
                 if a.needsLogin, let dir = a.configDir {
                     let mi = NSMenuItem(title: "  重新登录 \(a.label)…", action: #selector(relogin(_:)), keyEquivalent: "")
                     mi.target = self
@@ -273,7 +274,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(withTitle: "退出", action: #selector(quit), keyEquivalent: "q").target = self
     }
 
-    @objc func refreshNow() { refresh(); checkNotices() }
+    @objc func refreshNow() { refresh(force: true); checkNotices() }
     @objc func openNotice(_ sender: NSMenuItem) {
         if let s = sender.representedObject as? String, let u = URL(string: s) { NSWorkspace.shared.open(u) }
     }

@@ -170,16 +170,34 @@ func switchDefault(to x: ManagedAccount, all: [ManagedAccount]) -> String? {
 }
 
 /// 同一账号的刷新串行进行，避免两次刷新互相把对方的 refresh token 作废
-actor RefreshGate {
-    static let shared = RefreshGate()
-    func run<T>(_ body: () async -> T) async -> T { await body() }
+/// 真正的异步互斥锁：actor 方法在 await 处可被重入，单纯 `await body()` 串不住，所以用排队的 continuation
+actor AsyncLock {
+    private var busy = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+    func lock() async {
+        if !busy { busy = true; return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+    func unlock() {
+        if waiters.isEmpty { busy = false } else { waiters.removeFirst().resume() }
+    }
+}
+
+enum RefreshGate {
+    static let lock = AsyncLock()
+    static func run<T>(_ body: () async -> T) async -> T {
+        await lock.lock()
+        let r = await body()
+        await lock.unlock()
+        return r
+    }
 }
 
 enum TokenResult { case ok(String), needLogin(String), err(String) }
 
 /// 取可用的 accessToken；距到期不足 5 分钟（或 force）时先刷新并写回钥匙串
 func accessToken(for a: ManagedAccount, force: Bool = false) async -> TokenResult {
-    await RefreshGate.shared.run {
+    await RefreshGate.run {
         guard var root = readKeychainJSON(service: a.service), var oauth = root["claudeAiOauth"] as? [String: Any] else {
             return .needLogin("还没登录：菜单里点「重新登录」")
         }
@@ -261,70 +279,88 @@ func parseUsage(_ d: [String: Any], now: Date) -> [UsageWindow] {
     return out
 }
 
-func fetchManaged(_ a: ManagedAccount, isDefault: Bool) async -> ClaudeAccount {
+func cacheKey(_ a: ManagedAccount) -> String { identityKey(a) ?? a.dir }
+
+/// 默认凭据（平时 `claude` 用的那份）的 accessToken；不刷新，过期就返回 nil
+func defaultAccessToken() -> String? {
+    guard let obj = readKeychainJSON(service: "Claude Code-credentials"),
+          let oauth = obj["claudeAiOauth"] as? [String: Any],
+          let token = oauth["accessToken"] as? String else { return nil }
+    if let exp = num(oauth["expiresAt"]), exp / 1000 < Date().timeIntervalSince1970 + 30 { return nil }
+    return token
+}
+
+/// 查一个托管账号：先看缓存节奏与限流退避，必要时才发请求；失败时保留上次的数字并标注原因
+func fetchManaged(_ a: ManagedAccount, isDefault: Bool, force: Bool = false) async -> ClaudeAccount {
     let email = a.email ?? (a.dir as NSString).lastPathComponent
     var acc = ClaudeAccount(label: accountLabel(dir: a.dir, email: email), email: email, org: a.org ?? "", active: isDefault,
                             source: "直连", configDir: a.dir)
-    if isDefault {
-        // 在用账号：令牌归 Claude Code 管，只读默认凭据，不刷新
-        switch await fetchClaudeDirect() {
-        case .ok(let d): acc.windows = d.windows; acc.updatedAt = d.updatedAt; acc.extraKeys = d.extraKeys
-        case .err(let m): acc.error = m
-        }
+    let key = cacheKey(a)
+    let cache = UsageCache.shared
+    func fromCache(_ note: String?) {
+        acc.windows = cache.windows(key)
+        acc.extraKeys = cache.get(key)?.extraKeys ?? []
+        acc.updatedAt = cache.get(key)?.fetchedAt
+        acc.warning = note
+        if acc.windows.isEmpty, let n = note { acc.error = n }        // 一点旧数据都没有时才算错误
+    }
+    if !cache.shouldFetch(key, active: isDefault, force: force) {
+        let c = cache.get(key)
+        fromCache(c?.retryAfter.flatMap { $0 > Date() ? "被限流，\(clockFmt.string(from: $0)) 后再查" : nil })
         return acc
     }
+    cache.markAttempt(key)
     for attempt in 0..<2 {
-        switch await accessToken(for: a, force: attempt == 1) {
-        case .needLogin(let m): acc.error = m; acc.needsLogin = true; return acc
-        case .err(let m): acc.error = m; return acc
-        case .ok(let tok):
-            do {
-                let (body, resp) = try await session.data(for: usageRequest(token: tok))
-                let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
-                if code == 401 && attempt == 0 { continue }          // 令牌被提前作废：强制刷新再试一次
-                guard code == 200, let d = try JSONSerialization.jsonObject(with: body) as? [String: Any] else {
-                    acc.error = code == 401 ? "令牌无效（401）：需要重新登录" : "查询用量失败：HTTP \(code)"
-                    acc.needsLogin = code == 401
-                    return acc
-                }
-                acc.windows = parseUsage(d, now: Date())
-                acc.extraKeys = extraUsageKeys(d)
-                acc.updatedAt = Date()
-                if acc.windows.isEmpty { acc.error = "返回格式变了，解析不出用量" }
-                return acc
-            } catch {
-                acc.error = describe(error)
-                return acc
+        let token: String
+        if isDefault {
+            // 在用账号：令牌归 Claude Code 管，只读默认凭据，不刷新
+            guard let t = defaultAccessToken() else { fromCache("在用账号的令牌已过期，等 Claude Code 自己刷新"); return acc }
+            token = t
+        } else {
+            switch await accessToken(for: a, force: attempt == 1) {
+            case .needLogin(let m): acc.error = m; acc.needsLogin = true; return acc
+            case .err(let m): fromCache(m); return acc
+            case .ok(let t): token = t
             }
+        }
+        switch await requestUsage(token: token) {
+        case .ok(let d):
+            let w = parseUsage(d, now: Date())
+            if w.isEmpty { fromCache("返回格式变了，解析不出用量"); return acc }
+            cache.storeSuccess(key, windows: w, extraKeys: extraUsageKeys(d))
+            acc.windows = w
+            acc.extraKeys = extraUsageKeys(d)
+            acc.updatedAt = Date()
+            return acc
+        case .rateLimited(let ra):
+            let until = cache.storeRateLimited(key, retryAfterHeader: ra)
+            fromCache("被限流（429），\(clockFmt.string(from: until)) 后再查")
+            return acc
+        case .unauthorized:
+            if !isDefault && attempt == 0 { continue }             // 令牌被提前作废：强制刷新再试一次
+            if isDefault { fromCache("在用账号的令牌失效（401），等 Claude Code 自己刷新"); return acc }
+            acc.error = "令牌无效（401）：需要重新登录"; acc.needsLogin = true
+            return acc
+        case .http(let code):
+            fromCache("查询用量失败：HTTP \(code)")
+            return acc
+        case .failure(let m):
+            fromCache(m)
+            return acc
         }
     }
     return acc
 }
 
 /// 一个账号都没加时的兜底：只读 Claude Code 默认登录，不刷新（它的令牌归你平时用的 Claude Code 管）
-func fetchClaudeDirect() async -> Fetch<ClaudeAccount> {
-    guard let obj = readKeychainJSON(service: "Claude Code-credentials"),
-          let oauth = obj["claudeAiOauth"] as? [String: Any],
-          let token = oauth["accessToken"] as? String else {
-        return .err("钥匙串里没有 Claude Code 登录信息")
-    }
-    if let exp = num(oauth["expiresAt"]), exp / 1000 < Date().timeIntervalSince1970 + 30 {
-        return .err("登录令牌已过期：用一下 Claude Code 就会自动刷新")
-    }
-    do {
-        let (body, resp) = try await session.data(for: usageRequest(token: token))
-        let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
-        guard code == 200, let d = try JSONSerialization.jsonObject(with: body) as? [String: Any] else {
-            return .err(code == 401 ? "令牌失效（401）：用一下 Claude Code 就会刷新" : "HTTP \(code)")
-        }
-        var acc = ClaudeAccount(label: "C", email: "Claude Code 默认登录（只读）", org: "", active: true,
-                                updatedAt: Date(), source: "直连")
-        acc.windows = parseUsage(d, now: Date())
-        acc.extraKeys = extraUsageKeys(d)
-        return acc.windows.isEmpty ? .err("返回格式变了，解析不出用量") : .ok(acc)
-    } catch {
-        return .err(describe(error))
-    }
+func fetchClaudeDirect(force: Bool = false) async -> Fetch<ClaudeAccount> {
+    let fake = ManagedAccount(dir: "default", service: "Claude Code-credentials")
+    var acc = await fetchManaged(fake, isDefault: true, force: force)
+    acc.label = "C"
+    acc.email = "Claude Code 默认登录（只读）"
+    acc.configDir = nil
+    if let e = acc.error { return .err(e) }
+    return .ok(acc)
 }
 
 /// 打开终端，用官方 `claude auth login` 登录到指定配置目录。
