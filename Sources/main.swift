@@ -105,8 +105,45 @@ if CommandLine.arguments.contains("--selftest") {
         if !ok { fail += 1 }
         print("\(ok ? "✓" : "✗") \(name)")
     }
+    // 各模块自带的自检：多数返回失败清单；TokenStats 返回全部结果（以 ✓ / ✗ 开头）
+    let modules: [(String, () -> [String])] = [
+        ("Codex", CodexService.selfTest), ("Gemini", GeminiService.selfTest), ("Kimi/Grok/ZCode", KimiGrokZCode.selfTest),
+        ("Kimi", KimiService.selfTest), ("Grok", GrokService.selfTest), ("ZCode", ZCodeService.selfTest),
+        ("OpenCode Go", OpenCodeGoService.selfTest), ("MiniMax", MiniMaxService.selfTest), ("History", History.selfTest),
+        ("TokenStats", TokenStats.selfTest),
+    ]
+    for (name, run) in modules {
+        let r = run()
+        let fails = name == "TokenStats" ? r.filter { $0.hasPrefix("✗") } : r
+        if fails.isEmpty { print("✓ \(name)") } else { fail += fails.count; for f in fails { print("✗ \(name): \(f)") } }
+    }
     print(fail == 0 ? L("全部通过", "All passed") : L("\(fail) 个失败", "\(fail) failed"))
     exit(fail == 0 ? 0 : 1)
+}
+
+// 费用统计：AIUsageMaster --stats  扫描本机 Claude Code 日志，打印折合 API 费用并生成 HTML 报告
+if CommandLine.arguments.contains("--stats") {
+    let sem = DispatchSemaphore(value: 0)
+    Task.detached {
+        let s = await refreshTokenStats(progress: nil)
+        flushTokenStatsCache()
+        let subs = loadTokenSubscriptions()
+        print(L("折合 API 费用（本机 Claude Code 日志）", "API-equivalent cost (this Mac's Claude Code logs)"))
+        print(L("  今天 \(usd(s.today.costUSD))，最近 7 天 \(usd(s.last7Days.costUSD))，本月 \(usd(s.thisMonth.costUSD))，最近 30 天 \(usd(s.last30Days.costUSD))",
+                "  Today \(usd(s.today.costUSD)), last 7 days \(usd(s.last7Days.costUSD)), this month \(usd(s.thisMonth.costUSD)), last 30 days \(usd(s.last30Days.costUSD))"))
+        let sv = tokenSavings(s, subscriptions: subs, period: .thisMonth)
+        print(sv.hasSubscriptions
+              ? L("  \(sv.label)：订阅费 \(usd(sv.subscriptionUSD))，相当于省下 \(usd(sv.savedUSD))", "  \(sv.label): subscriptions \(usd(sv.subscriptionUSD)), about \(usd(sv.savedUSD)) saved")
+              : L("  订阅月费还没填：\(tokenSubscriptionsPath)", "  Subscription prices not set yet: \(tokenSubscriptionsPath)"))
+        print(L("最近 30 天的项目：", "Projects, last 30 days:"))
+        for p in s.byProject.prefix(10) { print("  \(usd(p.last30Days.costUSD).padding(toLength: 11, withPad: " ", startingAt: 0)) \(p.name)") }
+        print(L("报告：", "Report: ") + writeCostReport(s, subscriptions: subs).path)
+        print(L("（扫描 \(s.scannedFiles) 个文件，新增 \(s.newRecords) 条，用时 \(String(format: "%.2f", s.scanSeconds)) 秒）",
+                "(\(s.scannedFiles) files scanned, \(s.newRecords) new records, \(String(format: "%.2f", s.scanSeconds)) s)"))
+        sem.signal()
+    }
+    sem.wait()
+    exit(0)
 }
 
 nonisolated(unsafe) var exitCode: Int32 = 0
@@ -148,6 +185,20 @@ if CommandLine.arguments.contains("--print") {
             if let p = u.pooled { print("  \(p)") }
         case .err(let m): print("Cursor ⚠︎ \(m)")
         }
+        for st in s.services {
+            for a in st.accounts {
+                print("\(st.displayName)  \(a.title)" + (a.plan.map { "  \($0)" } ?? "") + "  [\(ago(a.updatedAt, now: now))]")
+                for n in a.notes { print("  \(n)") }
+                if let e = a.error { print("  ⚠︎ \(e)") }
+                for w in a.windows {
+                    let pct = w.percent.map { "\(bar($0)) \(Int($0.rounded()))%" } ?? "—"
+                    let when = w.resetsAt.map { L("\(clockFmt.string(from: $0)) 重置（还有 \(countdown($0, now: now))）", "resets \(clockFmt.string(from: $0)) (in \(countdown($0, now: now)))") } ?? ""
+                    print("  \(w.label)  \(pct)  \(when)" + (w.detail.map { "  \($0)" } ?? ""))
+                }
+            }
+        }
+        let notSet = registeredServices.filter { !$0.isConfigured() }.map { $0.displayName }
+        if !notSet.isEmpty { print(L("未配置：", "Not set up: ") + notSet.joined(separator: listSep)) }
         var bad: Int32 = 0
         if case .err = s.claude { bad = 1 }
         if case .err = s.cursor { bad = 1 }

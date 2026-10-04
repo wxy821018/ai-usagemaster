@@ -30,6 +30,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var cursor: CursorUsage?
     var cursorOKAt: Date?
     var cursorErr: String?
+    var services: [ServiceStatus] = []
+    var tokenStats: TokenStatsSummary?
+    var tokenStatsRunning = false
     var fetching = false
     var switchNote: String?
     var lastAutoSwitch: Date = .distantPast
@@ -73,7 +76,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         RunLoop.main.add(t1, forMode: .common)
         RunLoop.main.add(t2, forMode: .common)
         RunLoop.main.add(t3, forMode: .common)
+        let t4 = Timer(timeInterval: 10 * 60, repeats: true) { _ in Task { @MainActor in self.refreshTokenStatsInBackground() } }
+        RunLoop.main.add(t4, forMode: .common)
         checkNotices()
+        refreshTokenStatsInBackground()
         // 刚唤醒时网络往往还没连上：等 8 秒再刷
         NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { _ in
             DispatchQueue.main.asyncAfter(deadline: .now() + 8) { Task { @MainActor in self.refresh() } }
@@ -95,7 +101,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             case .ok(let u): self.cursor = u; self.cursorOKAt = s.at; self.cursorErr = nil
             case .err(let m): self.cursorErr = m
             }
+            self.services = s.services
             self.fetching = false
+            recordHistory(s)
             self.scheduleRetryIfNeeded()
             self.maybeAutoSwitch()
             if let a = self.claude, self.claudeErr == nil {
@@ -165,6 +173,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             add("Cu ", cursorStale ? .secondaryLabelColor : .labelColor)
             add("\(Int(u.percent.rounded()))%", cursorStale ? .secondaryLabelColor : color(u.percent))
         } else if cursorErr != nil { add("Cu ⚠︎", .systemOrange) } else { add("Cu …") }
+        // 其它已配置的服务：只显示最紧的那个窗口
+        for s in services {
+            let ws = s.accounts.filter { $0.error == nil }.flatMap { $0.windows }.filter { $0.percent != nil }
+            guard let w = ws.max(by: { ($0.percent ?? 0) < ($1.percent ?? 0) }), let pct = w.percent else { continue }
+            add("  \(serviceShortName(s.id)) ")
+            add("\(Int(pct.rounded()))%", color(pct))
+        }
         item.button?.attributedTitle = title
     }
 
@@ -230,7 +245,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     let tail = w.resetsAt == nil ? L("未开始计时", "not started") : (reset ? L("\(when) 已重置（等新数据）", "reset at \(when) (waiting for new data)") : L("\(when) 重置（还有 \(countdown(w.resetsAt, now: now))）", "resets \(when) (in \(countdown(w.resetsAt, now: now)))"))
                     line("  \(w.label)", .labelColor)
                     line("    \(bar(pct)) \(Int(pct.rounded()))%   \(tail)", reset ? .labelColor : color(w))
-                    if let pw = paceWarning(w, now: now) { line("    ⚡ \(pw.text)", .systemOrange, small: true) }
+                    if let pj = projectionText(a, w, now) { line("    ⏱ \(pj)", .secondaryLabelColor, small: true) }
+                    else if let pw = paceWarning(w, now: now) { line("    ⚡ \(pw.text)", .systemOrange, small: true) }
                 }
                 let src = L("  数据：\(ago(a.updatedAt, now: now))", "  Data: \(ago(a.updatedAt, now: now))")
                 line(src, small: true)
@@ -257,6 +273,81 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         } else if cursorErr == nil {
             line(L("  读取中…", "  Loading…"))
         }
+
+        // 其它 AI 服务
+        for s in services {
+            menu.addItem(.separator())
+            header(s.displayName)
+            if s.accounts.isEmpty { line(L("  读取中…", "  Loading…")) }
+            for a in s.accounts {
+                line("  " + [a.title, a.plan ?? ""].filter { !$0.isEmpty }.joined(separator: " · "), small: true)
+                for n in a.notes { line("  \(n)", small: true) }
+                if let e = a.error { line("  ⚠︎ \(e)", .systemOrange) }
+                for w in a.windows {
+                    let tail: String
+                    if let r = w.resetsAt {
+                        tail = r <= now ? L("\(clockFmt.string(from: r)) 已重置（等新数据）", "reset at \(clockFmt.string(from: r)) (waiting for new data)")
+                                        : L("\(clockFmt.string(from: r)) 重置（还有 \(countdown(r, now: now))）", "resets \(clockFmt.string(from: r)) (in \(countdown(r, now: now)))")
+                    } else { tail = "" }
+                    line("  \(w.label)" + (w.detail.map { "  \($0)" } ?? ""), .labelColor)
+                    if let pct = w.percent {
+                        line("    \(bar(pct)) \(Int(pct.rounded()))%   \(tail)", color(pct))
+                    } else if !tail.isEmpty { line("    \(tail)", small: true) }
+                }
+                if let u = a.updatedAt { line(L("  数据：", "  Data: ") + ago(u, now: now), small: true) }
+            }
+        }
+        let unconfigured = registeredServices.filter { !$0.isConfigured() }
+        if !unconfigured.isEmpty {
+            menu.addItem(.separator())
+            let more = NSMenuItem(title: L("其他 AI 服务（未配置）", "Other AI Services (not set up)"), action: nil, keyEquivalent: "")
+            let sub = NSMenu()
+            for s in unconfigured {
+                let si = NSMenuItem(title: s.displayName, action: nil, keyEquivalent: "")
+                let hint = NSMenu()
+                for l in wrapForMenu(s.setupHint) {
+                    let mi = NSMenuItem(title: l, action: nil, keyEquivalent: "")
+                    mi.isEnabled = false
+                    hint.addItem(mi)
+                }
+                if apiKeyServices.contains(s.id) {
+                    hint.addItem(.separator())
+                    let k = NSMenuItem(title: L("填写 API Key…", "Enter API Key…"), action: #selector(enterAPIKey(_:)), keyEquivalent: "")
+                    k.target = self
+                    k.representedObject = s.id
+                    hint.addItem(k)
+                }
+                si.submenu = hint
+                sub.addItem(si)
+            }
+            more.submenu = sub
+            menu.addItem(more)
+        }
+
+        // 费用（按 API 价折算）
+        menu.addItem(.separator())
+        header(L("费用（本机 Claude Code 日志，按 API 价折算）", "Cost (this Mac's Claude Code logs at API prices)"))
+        if let s = tokenStats {
+            line(L("  今天 \(usd(s.today.costUSD)) · 本月 \(usd(s.thisMonth.costUSD)) · 最近 30 天 \(usd(s.last30Days.costUSD))",
+                   "  Today \(usd(s.today.costUSD)) · this month \(usd(s.thisMonth.costUSD)) · last 30 days \(usd(s.last30Days.costUSD))"))
+            let sv = tokenSavings(s, subscriptions: loadTokenSubscriptions(), period: .thisMonth)
+            if sv.hasSubscriptions {
+                line(L("  本月订阅费 \(usd(sv.subscriptionUSD))（按天折算），相当于省下 \(usd(sv.savedUSD))",
+                       "  Subscriptions this month \(usd(sv.subscriptionUSD)) (prorated), about \(usd(sv.savedUSD)) saved"))
+            }
+            let top = s.byProjectThisMonth.prefix(3).map { "\($0.name) \(usd($0.thisMonth.costUSD))" }
+            if !top.isEmpty { line(L("  本月最多：", "  Top this month: ") + top.joined(separator: " · "), small: true) }
+        } else {
+            line(tokenStatsRunning ? L("  统计中…（第一次要扫一遍日志，几秒钟）", "  Counting… (the first scan reads all logs, a few seconds)")
+                                   : L("  还没有数据", "  No data yet"), small: true)
+        }
+        let rep = NSMenuItem(title: L("打开费用与项目报告…", "Open Cost and Project Report…"), action: #selector(openCostReport), keyEquivalent: "")
+        rep.target = self
+        rep.isEnabled = tokenStats != nil
+        menu.addItem(rep)
+        let subs = NSMenuItem(title: L("填写订阅月费…（用来算省了多少）", "Set Subscription Prices… (for savings)"), action: #selector(editSubscriptions), keyEquivalent: "")
+        subs.target = self
+        menu.addItem(subs)
 
         menu.addItem(.separator())
         let last = [claudeOKAt, cursorOKAt].compactMap { $0 }.max()
@@ -306,6 +397,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// "（下面是 5 分钟前的数据）"
     func staleSuffix(_ d: Date?, _ now: Date) -> String {
         L("（下面是 \(ago(d, now: now)) 的数据）", " (showing data from \(ago(d, now: now)))")
+    }
+
+    /// 本机 Claude Code 日志 → token、折合 API 费用、各项目用量（第一次全量扫描几秒，之后增量）
+    func refreshTokenStatsInBackground() {
+        guard !tokenStatsRunning else { return }
+        tokenStatsRunning = true
+        Task {
+            let s = await refreshTokenStats(progress: nil)
+            self.tokenStats = s
+            self.tokenStatsRunning = false
+        }
+    }
+
+    func applicationWillTerminate(_ n: Notification) { flushTokenStatsCache() }
+
+    @objc func openCostReport() {
+        guard let s = tokenStats else { return }
+        let url = writeCostReport(s, subscriptions: loadTokenSubscriptions())
+        NSWorkspace.shared.open(url)
+    }
+
+    @objc func editSubscriptions() {
+        _ = loadTokenSubscriptions()          // 文件不存在时先写一份示例
+        NSWorkspace.shared.open(URL(fileURLWithPath: tokenSubscriptionsPath))
     }
 
     @objc func refreshNow() { refresh(force: true); checkNotices() }
@@ -391,6 +506,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if let raw = sender.representedObject as? String, let type = AlertType(rawValue: raw) { type.enabled.toggle() }
     }
     @objc func testAlert() { AlertCenter.shared.sendTest() }
+
+    /// 用 API Key 查用量的服务：在弹窗里输入（安全输入框），存进钥匙串
+    @objc func enterAPIKey(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? String,
+              let s = registeredServices.first(where: { $0.id == id }) else { return }
+        let alert = NSAlert()
+        alert.messageText = L("填写 \(s.displayName) 的 API Key", "\(s.displayName) API key")
+        alert.informativeText = L("只存进本机钥匙串，只发给 \(s.displayName) 自己的接口。", "Stored only in your Keychain and sent only to \(s.displayName)'s own API.")
+        let field = NSSecureTextField(frame: NSRect(x: 0, y: 0, width: 320, height: 24))
+        var regionPopup: NSPopUpButton?
+        if id == "minimax" {
+            // MiniMax 国际版与国内版是两套账号体系，key 只在自己那边有效
+            let box = NSView(frame: NSRect(x: 0, y: 0, width: 320, height: 56))
+            field.frame.origin.y = 32
+            let pop = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 320, height: 26), pullsDown: false)
+            pop.addItems(withTitles: [L("国际版（platform.minimax.io）", "International (platform.minimax.io)"),
+                                      L("国内版（platform.minimaxi.com）", "China (platform.minimaxi.com)")])
+            box.addSubview(field)
+            box.addSubview(pop)
+            regionPopup = pop
+            alert.accessoryView = box
+        } else {
+            alert.accessoryView = field
+        }
+        alert.addButton(withTitle: L("保存", "Save"))
+        alert.addButton(withTitle: L("取消", "Cancel"))
+        NSApp.activate(ignoringOtherApps: true)
+        alert.window.initialFirstResponder = field
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let key = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !key.isEmpty else { return }
+        let region: String? = regionPopup.map { $0.indexOfSelectedItem == 1 ? "cn" : "global" }
+        switchNote = saveServiceAPIKey(service: id, apiKey: key, region: region)
+            ? L("已保存 \(s.displayName) 的 API Key", "Saved the \(s.displayName) API key")
+            : L("保存 \(s.displayName) 的 API Key 失败", "Could not save the \(s.displayName) API key")
+        refresh(force: true)
+    }
     @objc func toggleStatusLine() {
         switchNote = statusLineInstalled() ? uninstallStatusLine() : installStatusLine()
     }
@@ -409,3 +561,71 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
 // 命令行模式：AIUsageMaster --print  拉一次数据，把菜单里的内容打印到终端后退出（不含任何令牌）
 // 自检：AIUsageMaster --selftest  用构造数据验证自动切换规则
+
+/// 菜单栏上各服务的简写
+func serviceShortName(_ id: String) -> String {
+    ["codex": "Cx", "gemini": "Gm", "antigravity": "Ag", "kimi": "Ki", "grok": "Gk", "zcode": "Zc", "opencode-go": "Oc", "minimax": "Mm"][id] ?? String(id.prefix(2)).capitalized
+}
+
+/// 需要在菜单里填 API Key 才能用的服务
+let apiKeyServices: Set<String> = ["minimax", "opencode-go"]
+
+/// 长说明在菜单里按句子断行（中文按 ；。，英文按 ; . 之后的空格），每行不超过约 width 个字符
+func wrapForMenu(_ s: String, width: Int = 56) -> [String] {
+    var pieces: [String] = []
+    var cur = ""
+    for ch in s {
+        cur.append(ch)
+        if "；。;\n".contains(ch) || (ch == " " && (cur.hasSuffix(". ") || cur.hasSuffix("; "))) {
+            pieces.append(cur.trimmingCharacters(in: .whitespacesAndNewlines)); cur = ""
+        }
+    }
+    if !cur.trimmingCharacters(in: .whitespaces).isEmpty { pieces.append(cur.trimmingCharacters(in: .whitespaces)) }
+    var lines: [String] = []
+    for p in pieces where !p.isEmpty {
+        var rest = Substring(p)
+        while rest.count > width {
+            // 优先在空格或中文逗号处断开
+            let head = rest.prefix(width)
+            let cut = head.lastIndex(where: { $0 == " " || $0 == "，" || $0 == "," }).map { rest.index(after: $0) } ?? head.endIndex
+            lines.append(String(rest[..<cut]).trimmingCharacters(in: .whitespaces))
+            rest = rest[cut...]
+        }
+        if !rest.isEmpty { lines.append(String(rest).trimmingCharacters(in: .whitespaces)) }
+    }
+    return lines
+}
+
+/// 每轮数据写进用量历史（时间用数据本身的时间：没重新查的账号不会被重复记成新读数）
+func recordHistory(_ s: Snapshot) {
+    var e: [HistoryEntry] = []
+    if case .ok(let accts) = s.claude { for a in accts { e += historyEntries(claude: [a], at: a.updatedAt ?? s.at) } }
+    if case .ok(let u) = s.cursor { e += historyEntries(cursor: u, at: s.at) }
+    for st in s.services { e += historyEntries(service: st, at: st.accounts.compactMap { $0.updatedAt }.max() ?? s.at) }
+    guard !e.isEmpty else { return }
+    DispatchQueue.global(qos: .utility).async { recordSnapshot(entries: e) }
+}
+
+/// 按最近 90 分钟的实际消耗速度推算：在用账号总是显示；其它账号只在重置前会用完时显示
+func projectionText(_ a: ClaudeAccount, _ w: UsageWindow, _ now: Date) -> String? {
+    let (pct, reset) = effective(w, now)
+    guard !reset, pct < 99,
+          let rate = burnRate(service: "claude", account: historyClaudeAccountID(a), window: historyWindowID(w), now: now),
+          rate >= 0.1 else { return nil }
+    let r = String(format: "%.1f", rate)
+    if let t = projectedExhaustion(currentPercent: pct, rate: rate, resetsAt: w.resetsAt, now: now) {
+        return L("按最近的速度（每小时 +\(r)%），约 \(clockFmt.string(from: t)) 用完（还有 \(countdown(t, now: now))）",
+                 "At the recent pace (+\(r)% per hour) it runs out around \(clockFmt.string(from: t)) (in \(countdown(t, now: now)))")
+    }
+    return a.active ? L("按最近的速度（每小时 +\(r)%），重置前用不完", "At the recent pace (+\(r)% per hour) it lasts until the reset") : nil
+}
+
+/// 金额：≥1000 带千位分隔，不带小数；负数写成 -$5.00
+func usd(_ v: Double) -> String {
+    if v < 0 { return "-" + usd(-v) }
+    if abs(v) >= 1000 {
+        let f = NumberFormatter(); f.numberStyle = .decimal; f.maximumFractionDigits = 0; f.locale = Locale(identifier: "en_US")
+        return "$" + (f.string(from: NSNumber(value: v)) ?? String(format: "%.0f", v))
+    }
+    return String(format: "$%.2f", v)
+}

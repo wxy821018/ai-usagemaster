@@ -25,9 +25,12 @@ I use several Claude accounts and I use them a lot, so one of them is always run
   - Manual. You pick, it never switches on its own.
 - **Notifications.** The active account reaching 80% or 95%, using quota fast, the active account running out (in manual mode it names the account to switch to, and clicking the notification switches), every account running out (with the earliest recovery time), a used-up account becoming available again, a weekly quota about to expire with 30% or more unused, an account that needs to sign in again, Cursor reaching 80% or 100%, limits that reset earlier than scheduled, Claude status page posts about usage limits, new quota items in the usage data, and automatic switches. Each kind can be turned off in the menu, and each event is reported once per reset period, even across restarts.
 - **Cursor.** Spend against the included amount for the current billing period, the reset date, and team pooled usage.
+- **Other AI services (experimental).** Codex, Gemini CLI, Antigravity, Kimi Code, Grok, ZCode, OpenCode Go and MiniMax appear on their own once their tool is signed in on this Mac. MiniMax and OpenCode Go also accept an API key entered in the menu. Each is checked at most every 10 minutes (Codex every 15). These were written from each tool's local sign-in files and usage endpoints and tested against sample responses, not yet against live accounts, so expect rough edges and please report them.
+- **Burn-rate forecast.** Readings go into a local history file. Once there are enough recent readings, the menu shows the actual pace over the last 90 minutes and when the window runs out at that pace.
+- **Cost and project statistics.** Reads this Mac's Claude Code logs (token counts only, never the conversation text) and prices them at Claude API list prices: today, this month, the last 30 days, the top projects, and an HTML report by project, model and session. Enter what you pay for your subscriptions and it also shows roughly how much they saved you. It is an estimate at API prices, not a bill.
 - **Claude Code status line.** Optional. Turn on "Show Usage in Claude Code Status Line" in the menu and Claude Code shows a line like `Opus 5.5 │ $1.23 │ ● Personal 5h 20%↻00:20 wk 12% │ Work 5h 100%↻00:30`. Your existing status line command keeps running, and its output comes first when it answers within 0.3 seconds. The live numbers Claude Code hands to the status line also feed the menu bar, so fewer usage requests are needed. `~/.claude/settings.json` is backed up before every change, and turning it off restores what was there.
 - **Follows your system language.** Chinese when macOS's preferred language is Chinese, English otherwise.
-- **Command line.** `AIUsageMaster --print` prints the current numbers once. `AIUsageMaster --selftest` runs the self-checks for the switching rules. `--install-statusline` and `--uninstall-statusline` do the same as the menu item.
+- **Command line.** `AIUsageMaster --print` prints the current numbers once. `AIUsageMaster --selftest` runs the self-checks for the switching rules. `AIUsageMaster --stats` prints the cost statistics and writes the HTML report. `--install-statusline` and `--uninstall-statusline` do the same as the menu item.
 
 ## Install
 
@@ -59,6 +62,14 @@ Choose **Add Claude Account…** in the menu. A Terminal window runs the officia
 | Claude tokens | One Keychain item per account, `Claude Code-credentials-<first 8 hex of SHA-256 of the config dir path>`, written by Claude Code at sign-in |
 | Token refresh | Five minutes before expiry, via `https://platform.claude.com/v1/oauth/token` with Claude Code's public OAuth client id |
 | Live usage while you work | The `rate_limits` field Claude Code passes to its status line command (only when the status line is turned on) |
+| Codex | The Codex CLI's own `codex app-server` with `~/.codex/auth.json`; falls back to `https://chatgpt.com/backend-api/wham/usage` |
+| Gemini CLI, Antigravity | `~/.gemini/oauth_creds.json` (or OpenCode's `auth.json`), then `https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota` |
+| Kimi Code | `~/.kimi-code/credentials/kimi-code.json`, then `https://api.kimi.com/coding/v1/usages` |
+| Grok | `~/.grok/auth.json`, then `https://cli-chat-proxy.grok.com/v1/billing` |
+| ZCode | `~/.zcode/cli/config.json` (a Z.ai or BigModel API key), then `/api/monitor/usage/quota/limit` on that host |
+| OpenCode Go | An API key from the menu, OpenCode's `auth.json` or `OPENCODE_API_KEY`, then `https://opencode.ai/zen/go/v1/usage` |
+| MiniMax | An API key from the menu, then `/v1/api/openplatform/coding_plan/remains` on `platform.minimax.io` or `www.minimaxi.com` |
+| Cost statistics | Claude Code's local logs under `~/.claude/projects/`, token counts only |
 | Status notices | `https://status.claude.com/api/v2/incidents.json` (public, no sign-in) |
 | Cursor usage | `GetCurrentPeriodUsage` and `GetPlanInfo` on `https://api2.cursor.sh/aiserver.v1.DashboardService`, with the token read (read-only) from Cursor's local `state.vscdb` |
 
@@ -66,6 +77,7 @@ Choose **Add Claude Account…** in the menu. A Terminal window runs the officia
 
 - Tokens live only in the macOS Keychain and are only sent to the matching vendor over HTTPS. Network sessions keep no disk cache, do not follow redirects, and nothing is logged.
 - Keychain writes go through the standard input of `security -i`, so tokens never appear in process arguments.
+- Other tools' sign-in files are only read, never written. API keys entered in the menu go into the Keychain. Gemini access tokens refreshed by AI UsageMaster stay in memory.
 - **Refreshing only touches AI UsageMaster's own copies of the credentials**, so the sign-in of the Claude Code you use day to day is not affected.
 - Switching accounts changes two things: the default Keychain item `Claude Code-credentials` and the `oauthAccount` entry in `~/.claude.json`. Before switching, the current credentials (which Claude Code may have refreshed) are saved back to that account's own directory.
 - Claude Code sometimes leaves a backup copy of its credentials in `~/.claude/.credentials.json`. While that file exists, running sessions only notice a change when the file's modification time changes, so after a switch AI UsageMaster updates that timestamp. It never changes the file's contents and never creates it.
@@ -79,10 +91,10 @@ Choose **Add Claude Account…** in the menu. A Terminal window runs the officia
 
 ## Roadmap
 
-- Add accounts for other AI services the same way as Claude: Codex, Gemini, Kimi, Grok, ZCode, OpenCode Go, MiniMax (in progress)
-- Usage history and burn-rate forecasts ("at this pace the 5-hour window runs out in about 1 h 40 min")
-- Token, API-equivalent cost and per-project statistics from local Claude Code logs, compared against what the subscriptions cost
-- Windows version
+- Several accounts per service for the other AI services, the way Claude works now
+- Verify the other services against live accounts
+- Usage per Claude account in the cost statistics
+- Windows version (see [docs/WINDOWS.md](docs/WINDOWS.md))
 
 ## Acknowledgements
 

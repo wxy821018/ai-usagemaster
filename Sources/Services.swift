@@ -42,4 +42,7 @@ protocol UsageService {
 }
 
 /// 已接入的服务（各家实现放在 Service<Name>.swift，在这里登记）
-var registeredServices: [UsageService] = []
+var registeredServices: [UsageService] = [
+    CodexService(), GeminiService(), AntigravityService(), KimiService(), GrokService(),
+    ZCodeService(), OpenCodeGoService(), MiniMaxService(),
+]

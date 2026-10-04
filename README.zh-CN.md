@@ -27,9 +27,12 @@
   - 手动：点哪个用哪个，不会自动换。
 - **提醒**：在用账号用到 80% 或 95%、用得太快、在用账号用完（手动模式下会告诉你该切到哪个，点通知就切过去）、所有账号都用完（告诉你最早几点恢复）、用完的账号恢复可用、每周额度快作废但还剩 30% 以上、账号需要重新登录、Cursor 用到 80% 或 100%、额度被提前重置、官方状态页出现和用量限制有关的公告、用量数据里出现新的额度项、自动切换了账号。每种都能在菜单里单独关掉；同一件事在同一个重置周期里只提醒一次，重启也不会重复。
 - **Cursor**：本期包含额度的花费、账单周期重置时间、团队共享额度。
+- **其他 AI 服务（实验性）**：Codex、Gemini CLI、Antigravity、Kimi Code、Grok、ZCode、OpenCode Go、MiniMax，本机对应的工具登录好之后会自动出现；MiniMax 和 OpenCode Go 也可以在菜单里直接填 API Key。每个服务最多 10 分钟查一次（Codex 15 分钟）。这几家是照各自工具的本地登录文件和用量接口写的，用样例数据测过，还没用真实账号验证，可能有不完善的地方，欢迎反馈。
+- **按实际速度预测**：每次读数都存进本地历史文件。最近的读数够多时，菜单里会显示最近 90 分钟的实际消耗速度，以及按这个速度几点用完。
+- **费用和项目统计**：读本机 Claude Code 的日志（只读 token 数，不读对话内容），按 Claude API 标价折算：今天、本月、最近 30 天、最花钱的几个项目，还能生成按项目、模型、会话细分的 HTML 报告。填上你每月实际付的订阅费，还会算出订阅大概帮你省了多少。这是按 API 价的估算，不是账单。
 - **Claude Code 状态栏**（可选）：在菜单里勾上「在 Claude Code 状态栏显示用量」，Claude Code 底部会显示一行，比如 `Opus 5.5 │ $1.23 │ ● 个人 5h 20%↻00:20 周 12% │ 工作 5h 100%↻00:30`。你原来的状态栏命令照常执行，它在 0.3 秒内给出的输出排在前面。Claude Code 交给状态栏的实时用量也会被菜单栏直接用上，少查几次用量接口。每次改 `~/.claude/settings.json` 之前都会备份，关掉时原样还原。
 - **语言跟随系统**：macOS 首选语言是中文就显示中文，否则显示英文。
-- **命令行**：`AIUsageMaster --print` 打印一次当前数据；`AIUsageMaster --selftest` 跑自动切换规则的自检；`--install-statusline` / `--uninstall-statusline` 和菜单里那一项作用相同。
+- **命令行**：`AIUsageMaster --print` 打印一次当前数据；`AIUsageMaster --selftest` 跑自动切换规则的自检；`AIUsageMaster --stats` 打印费用统计并生成 HTML 报告；`--install-statusline` / `--uninstall-statusline` 和菜单里那一项作用相同。
 
 ## 安装
 
@@ -61,6 +64,14 @@ open "$HOME/Applications/AI UsageMaster.app"
 | Claude 令牌 | 每个账号的钥匙串条目 `Claude Code-credentials-<配置目录路径的 SHA-256 前 8 位>`，由 Claude Code 登录时写入 |
 | 令牌刷新 | 到期前 5 分钟向 `https://platform.claude.com/v1/oauth/token` 换新，用的是 Claude Code 的公开 OAuth client id |
 | 使用中的实时用量 | Claude Code 交给状态栏命令的 `rate_limits` 字段（只在开了状态栏时） |
+| Codex | Codex 命令行自带的 `codex app-server`，用 `~/.codex/auth.json`；不行时退回 `https://chatgpt.com/backend-api/wham/usage` |
+| Gemini CLI、Antigravity | `~/.gemini/oauth_creds.json`（或 OpenCode 的 `auth.json`），然后查 `https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota` |
+| Kimi Code | `~/.kimi-code/credentials/kimi-code.json`，然后查 `https://api.kimi.com/coding/v1/usages` |
+| Grok | `~/.grok/auth.json`，然后查 `https://cli-chat-proxy.grok.com/v1/billing` |
+| ZCode | `~/.zcode/cli/config.json`（Z.ai 或智谱 BigModel 的 API Key），然后查该域名下的 `/api/monitor/usage/quota/limit` |
+| OpenCode Go | 菜单里填的 API Key、OpenCode 的 `auth.json` 或环境变量 `OPENCODE_API_KEY`，然后查 `https://opencode.ai/zen/go/v1/usage` |
+| MiniMax | 菜单里填的 API Key，然后查 `platform.minimax.io` 或 `www.minimaxi.com` 下的 `/v1/api/openplatform/coding_plan/remains` |
+| 费用统计 | Claude Code 在 `~/.claude/projects/` 下的本地日志，只读 token 数 |
 | 官方公告 | `https://status.claude.com/api/v2/incidents.json`（公开接口，不需要登录） |
 | Cursor 用量 | `https://api2.cursor.sh/aiserver.v1.DashboardService/GetCurrentPeriodUsage` 与 `GetPlanInfo`，令牌从 Cursor 本地的 `state.vscdb` 只读读取 |
 
@@ -68,6 +79,7 @@ open "$HOME/Applications/AI UsageMaster.app"
 
 - 令牌只放在 macOS 钥匙串里，只发给对应厂商的 HTTPS 接口。网络会话不写磁盘缓存，不跟随重定向，也不打日志。
 - 写钥匙串时通过 `security -i` 的标准输入传入，令牌不会出现在进程参数里。
+- 其他工具的登录文件只读不写。菜单里填的 API Key 存进钥匙串。AI UsageMaster 为 Gemini 刷新的访问令牌只放在内存里。
 - **刷新只针对 UsageMaster 自己的那几份凭据**，所以不会影响你平时用的 Claude Code 的登录状态。
 - 切换账号会改两处：默认的钥匙串条目 `Claude Code-credentials`，以及 `~/.claude.json` 里的 `oauthAccount`。切换前，当前账号可能已经被 Claude Code 刷新过的凭据，会先存回它自己的目录。
 - Claude Code 有时会在 `~/.claude/.credentials.json` 留一份凭据备份。这个文件在的时候，开着的会话只看它的修改时间来判断凭据变没变，所以切换后 AI UsageMaster 会更新一下它的修改时间。不改文件内容，文件不存在时也不会新建。
@@ -81,10 +93,10 @@ open "$HOME/Applications/AI UsageMaster.app"
 
 ## 路线图
 
-- 像 Claude 一样添加其他 AI 服务的账号：Codex、Gemini、Kimi、Grok、ZCode、OpenCode Go、MiniMax（开发中）
-- 用量历史、消耗速度预测（"按现在的速度，约 1 小时 40 分后用完"）
-- 按本机 Claude Code 日志统计 token、折合 API 费用、各项目用量，并和订阅月费对比
-- Windows 版
+- 其他 AI 服务也支持像 Claude 一样添加多个账号
+- 用真实账号验证其他服务
+- 费用统计按 Claude 账号分开
+- Windows 版（见 [docs/WINDOWS.md](docs/WINDOWS.md)）
 
 ## 致谢
 
