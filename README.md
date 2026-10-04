@@ -8,6 +8,10 @@ English | [简体中文](README.zh-CN.md)
 Work 23%·2h16  Personal 7%w  Spare 100%w  │  Cu 61%
 ```
 
+## Why I built this
+
+I use several Claude accounts and I use them a lot, so one of them is always running out and I keep having to switch. Finding out which account still has room, and when the others reset, meant checking each one in turn. That got tedious fast. So I built a small tool that shows every account's usage in the menu bar, tells me when limits reset, and switches to the right account on its own when one runs out.
+
 ## Features
 
 - **Multiple Claude accounts.** For each account: the 5-hour window, the weekly limit (all models) and per-model weekly limits, with progress bars and reset countdowns. Turns orange at 75% and red at 90%.
