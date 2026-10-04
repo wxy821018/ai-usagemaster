@@ -1,10 +1,10 @@
 // 费用报告：把 TokenStatsSummary 写成一个自包含的 HTML —— 不引用任何外部 CDN / 字体 / 脚本，图表是内联 SVG，
 // 悬停提示是页面里十几行内联脚本。浅色 / 深色跟随系统（prefers-color-scheme）。
-// 位置：~/Library/Application Support/UsageMaster/cost_report.html（权限 600）。
+// 位置：<appDataDir>/cost_report.html（macOS ~/Library/Application Support/UsageMaster，Windows %APPDATA%\UsageMaster；权限 600）。
 
 import Foundation
 
-let costReportURL = URL(fileURLWithPath: NSHomeDirectory() + "/Library/Application Support/UsageMaster/cost_report.html")
+let costReportURL = URL(fileURLWithPath: appDataDir + "/cost_report.html")
 
 /// 生成并写盘，返回文件位置（菜单里用 NSWorkspace.shared.open 打开即可）
 @discardableResult

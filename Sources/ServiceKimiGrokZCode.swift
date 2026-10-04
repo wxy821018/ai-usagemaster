@@ -444,7 +444,7 @@ struct GrokService: UsageService {
     /// GROK_HOME 只在是绝对路径时才用
     static func home(env: [String: String] = ProcessInfo.processInfo.environment) -> String {
         let h = env["GROK_HOME"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return h.hasPrefix("/") ? h : NSHomeDirectory() + "/.grok"
+        return isAbsolutePath(h) ? h : NSHomeDirectory() + "/.grok"
     }
 
     static func authPath(env: [String: String] = ProcessInfo.processInfo.environment) -> String { home(env: env) + "/auth.json" }

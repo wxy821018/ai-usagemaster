@@ -57,19 +57,19 @@ Found by the trial build and self-test. Each is a small, local change; none touc
 | Where | macOS behaviour | Windows change |
 |---|---|---|
 | ~~`Claude.swift`, `ServiceOpenCodeMiniMax.swift`~~ | ~~Keychain through `/usr/bin/security` and `SecItemCopyMatching`~~ | **Done**, see "Credential store" below |
-| `History.swift` line 442 | POSIX `rename()` replaces the target | CRT `rename` fails when the target exists: use `MoveFileExW` with `MOVEFILE_REPLACE_EXISTING` |
-| `History.swift` `open()` | Binary by default | Add `_O_BINARY`, or `\n` is written as `\r\n` |
-| `TokenStats.swift` | Deduplicates directories and files by `st_dev:st_ino` | `st_ino` is always 0 on Windows, so every file looks the same and only one log file is counted. Use the resolved path or the NTFS file ID |
-| `TokenStats.swift` | `st_mtimespec` (nanoseconds) | Not available; take the modification time from `FileManager` attributes, otherwise changes within the same second are missed |
-| `TokenStats.swift` worktree lookup | Absolute means "starts with `/`" | `C:\...` is treated as relative and joined onto another path, e.g. a project shown as `C:\src\worktree\C:\src\repo` |
-| `TokenStats.swift` | `realpath`, `memmem`, `autoreleasepool` | `GetFinalPathNameByHandleW` (resolves links, keeps the loop guard working), a small `memmem`, no pool needed |
+| ~~`History.swift` line 442~~ | ~~POSIX `rename()` replaces the target~~ | **Done**, see "Paths and file handling" below |
+| ~~`History.swift` `open()`~~ | ~~Binary by default~~ | **Done**, see "Paths and file handling" below |
+| ~~`TokenStats.swift`~~ | ~~Deduplicates directories and files by `st_dev:st_ino`~~ | **Done**, see "Paths and file handling" below |
+| ~~`TokenStats.swift`~~ | ~~`st_mtimespec` (nanoseconds)~~ | **Done**, see "Paths and file handling" below |
+| ~~`TokenStats.swift` worktree lookup~~ | ~~Absolute means "starts with `/`"~~ | **Done**, see "Paths and file handling" below |
+| ~~`TokenStats.swift`~~ | ~~`realpath`, `memmem`, `autoreleasepool`~~ | **Done**, see "Paths and file handling" below |
 | `ServiceCodex.swift` | Finds `codex` via `:`-separated `PATH` and nvm folders; writes to the app-server through a file descriptor; `kill`, `fcntl(F_SETNOSIGPIPE)` | `;`-separated `PATH` and `codex.cmd`/`.exe`; `FileHandle.write(contentsOf:)`; `TerminateProcess`; no SIGPIPE. The self-test's fake app-server is a `/bin/sh` script and needs a `.cmd` version |
 | `ServiceCodex.swift`, `ServiceKimiGrokZCode.swift` | `CFGetTypeID(n) != CFBooleanGetTypeID()` to tell JSON booleans from numbers | No public CoreFoundation; check `objCType`. The same test appears three times and can become one helper |
 | `ServiceGemini.swift` | `abbreviatingWithTildeInPath` | Not in Windows Foundation; one small extension |
 | `App.swift` | Holds `effective()`, `bindingWindow()` and `usd()`, which other files call | Move them into the core so the core builds without the UI |
 | `Alerts.swift` | Rules and macOS delivery (`AlertCenter`) in one file | Split at `// MARK: - 发送`: rules shared, delivery per platform (Windows toast) |
 | `Claude.swift` `openLoginTerminal` | `.command` script opened with `NSWorkspace` | A `.cmd` script started with `cmd /c start`, with `BROWSER` as above |
-| Data and cache paths | `~/Library/Application Support/UsageMaster`, `~/Library/Application Support/Cursor`, `~/Library/Application Support/orca` | `%APPDATA%` equivalents |
+| ~~Data and cache paths~~ | ~~`~/Library/Application Support/UsageMaster`, `~/Library/Application Support/Cursor`, `~/Library/Application Support/orca`~~ | **Done**, see "Paths and file handling" below |
 
 ## Credential store (done)
 
@@ -91,6 +91,24 @@ Two Windows-specific findings came out of this step:
 
 Self-test: on Windows every credential and switching test passes (43 lines pass; the 18 failures left are the Codex and token statistics items in the table above). On macOS 15.6 with Swift 6.2.4 all 45 lines pass, the 42 from before plus 3 new ones (delete then read as missing, encrypted item round trip, Orca present but not the source of the default sign-in). Temporary Keychain items and files are removed afterwards. `runCommand` no longer replaces `PATH` on Windows, so the Orca CLI can find the system folders.
 
+## Paths and file handling (done)
+
+`Sources/Platform.swift` holds the remaining platform differences outside the credential store:
+
+| What | macOS | Windows |
+|---|---|---|
+| `appSupportRoot` (Cursor, Orca, OpenCode data) | `~/Library/Application Support` | `%APPDATA%` |
+| `appDataDir` (cache, history, cost report, status line snapshot) | `~/Library/Application Support/UsageMaster` | `%APPDATA%\UsageMaster` |
+| `isAbsolutePath` | starts with `/` | also `C:\`, `C:/`, `\\server\share` and `\` |
+| `fileInfo` (type, size, modification time, identity) | `stat`; identity = device + inode | `GetFileInformationByHandle`; identity = volume serial + file index, modification time in milliseconds |
+| `realPath` | `realpath` | `GetFinalPathNameByHandleW`, so `C:/a/b` from git and `C:\a\b` from the logs become the same path |
+| `replaceFile` | `rename` | `MoveFileExW` with replace, retried while another process has the file open |
+| `openBinaryFlag`, `writeFD` | `0`, `write` | `_O_BINARY`, `_write` |
+
+The macOS side is the code that was there before, moved into one place. Dotfile locations in the home folder (`~/.claude`, `~/.config/usagemaster`, `~/.codex` and so on) are the same on both systems and were left alone. The same "absolute means starts with `/`" bug was also fixed for `GROK_HOME` and `OPENCODE_DB` / `XDG_DATA_HOME`.
+
+Checked on the test machine with real Claude Code logs (2,281 files): worktree costs now land on the main repository (for example 3.06 + 1.03 = 4.09 USD for one repository whose worktree was listed separately before), the file count is unchanged, and a second run reads only what changed (2 s instead of 35 s). Self-test: Windows passes everything except the 11 Codex items; macOS 15.6 passes all 45.
+
 ## Not tested yet
 
 - Whether a running session refreshes `oauthAccount` from `~/.claude.json` after a switch. This only affects the name it shows, not which account it uses.
@@ -99,7 +117,7 @@ Self-test: on Windows every credential and switching test passes (43 lines pass;
 
 ## Plan
 
-1. Keep one Swift codebase. Put the items above behind small platform files (credential store: done; paths, notifications, process helpers: next) and leave everything else shared.
+1. Keep one Swift codebase. Put the items above behind small platform files (credential store and paths: done; Codex process handling, notifications and the login terminal: next) and leave everything else shared.
 2. First Windows release: the command line (`--print`, `--stats`, `--selftest`) and the Claude Code status line, which shows usage inside the terminal without any tray UI.
 3. Then a tray icon drawn on the fly with the tightest percentage (same orange at 75% and red at 90%), the summary line as the tooltip, and a flyout panel with the per-account bars. It can be a thin shell that calls the core for JSON, so the UI stays separate from the logic. Start at login through `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`.
 4. Switching last, with the Orca rule above, since Orca already manages accounts on many Windows machines.

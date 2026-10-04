@@ -32,8 +32,7 @@ final class UsageCache: @unchecked Sendable {
     private let lock = NSLock()
     private var map: [String: CachedAccount] = [:]
     private let url: URL = {
-        let dir = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Application Support/UsageMaster", isDirectory: true)
+        let dir = URL(fileURLWithPath: appDataDir, isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir.appendingPathComponent("claude_usage_cache.json")
     }()

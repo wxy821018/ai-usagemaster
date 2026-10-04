@@ -9,8 +9,7 @@
 
 import Foundation
 
-let statusLineDir = FileManager.default.homeDirectoryForCurrentUser
-    .appendingPathComponent("Library/Application Support/UsageMaster", isDirectory: true)
+let statusLineDir = URL(fileURLWithPath: appDataDir, isDirectory: true)
 let statusLineSnapshotURL = statusLineDir.appendingPathComponent("statusline_latest.json")
 let statusLineUpstreamURL = URL(fileURLWithPath: NSHomeDirectory() + "/.config/usagemaster/statusline_upstream.json")
 let claudeSettingsURL = URL(fileURLWithPath: NSHomeDirectory() + "/.claude/settings.json")

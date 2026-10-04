@@ -1,14 +1,14 @@
 // Claude Code 本机会话日志 → token 用量与折合 API 费用（按天 / 项目 / 模型 / 会话）
 //
 // 数据源：Claude Code 每个会话写的 JSONL —— ~/.claude/projects、UsageMaster 自管账号目录 ~/.config/usagemaster/claude/*/projects、
-//   Orca 管理的账号 ~/Library/Application Support/orca/claude-accounts/*/auth/projects（存在才扫，递归找 *.jsonl）。
+//   Orca 管理的账号 <appSupportRoot>/orca/claude-accounts/*/auth/projects（Windows 为 %APPDATA%\orca；存在才扫，递归找 *.jsonl）。
 // 只处理 type=="assistant" 且带 message.usage 的行，只取：timestamp、cwd、sessionId、requestId、message.id、message.model
 //   和 usage 里的 token 数。**对话内容一个字节都不解码、不保存**：解析器只认 JSON 的结构边界，message.content 等字段
 //   整段跳过；交给 JSONSerialization 的只有 usage 那一小段对象。
 // 去重：同一条回复会出现在多个文件里（会话续接 / 分支会把旧消息抄进新文件），在一个文件里也会按内容块拆成多行
 //   （流式快照，前几行的 output_tokens 还没长全）。以 message.id + requestId 为键只计一次，各 token 字段取最大值（即最终值）。
 // 价格：默认是 Claude Code 2.1.288 内置的模型目录（/cost 用的同一份）；~/.config/usagemaster/pricing.json 可覆盖（同结构）。
-// 缓存：~/Library/Application Support/UsageMaster/token_cache.json（权限 600）——每个文件处理到的字节偏移与 (size, mtime)，
+// 缓存：<appDataDir>/token_cache.json（权限 600）——每个文件处理到的字节偏移与 (size, mtime)，
 //   加上每条回复一行的 token 记录（不存费用：费用在汇总时按当前价格表现算，改了价格立即生效）。
 //   文件只追加时从上次的偏移接着读；被截短或 mtime 变小就从头重扫（按最大值合并，重扫不会重复计）。
 //   Claude Code 默认会清掉 30 天前的会话日志，缓存里的记录不跟着删，所以历史能一直累积（保留 400 天）。
@@ -343,7 +343,7 @@ struct TokenStatsConfig {
     var minSaveInterval: TimeInterval = 600
 
     static let standard = TokenStatsConfig(roots: tsStandardRoots,
-                                           cachePath: NSHomeDirectory() + "/Library/Application Support/UsageMaster/token_cache.json",
+                                           cachePath: appDataDir + "/token_cache.json",
                                            pricingPath: NSHomeDirectory() + "/.config/usagemaster/pricing.json")
 }
 
@@ -356,7 +356,7 @@ fileprivate func tsStandardRoots() -> [String] {
     }
     var out = [home + "/.claude/projects"]
     out += subdirs(home + "/.config/usagemaster/claude").map { $0 + "/projects" }
-    out += subdirs(home + "/Library/Application Support/orca/claude-accounts").map { $0 + "/auth/projects" }
+    out += subdirs(orcaClaudeAccountsDir).map { $0 + "/auth/projects" }
     return out.filter { var d: ObjCBool = false; return fm.fileExists(atPath: $0, isDirectory: &d) && d.boolValue }
 }
 
@@ -459,7 +459,8 @@ final class TokenStatsEngine: @unchecked Sendable {
         return (list.count, todo.count)
     }
 
-    /// 递归找 *.jsonl。跟随软链目录（projects 里常有指向别的项目目录的软链），按 (设备, inode) 去重，目录环也靠它挡住
+    /// 递归找 *.jsonl。跟随软链目录（projects 里常有指向别的项目目录的软链），按文件身份去重（macOS 是设备 + inode，
+    /// Windows 是卷序列号 + 文件索引；Windows 的 stat 里 inode 恒为 0，不能用），目录环也靠它挡住
     private func listFiles() -> [(path: String, size: Int, mtimeMs: Int)] {
         var out: [(path: String, size: Int, mtimeMs: Int)] = []
         var seenFiles = Set<String>(), seenDirs = Set<String>()
@@ -467,20 +468,14 @@ final class TokenStatsEngine: @unchecked Sendable {
         for root in config.roots() {
             var stack = [root]
             while let dir = stack.popLast() {
-                var ds = stat()
-                guard stat(dir, &ds) == 0, (ds.st_mode & S_IFMT) == S_IFDIR,
-                      seenDirs.insert("\(ds.st_dev):\(ds.st_ino)").inserted else { continue }
+                guard case .ok(let di) = fileInfo(dir), di.isDirectory, seenDirs.insert(di.identity).inserted else { continue }
                 autoreleasepool {
                     for name in (try? fm.contentsOfDirectory(atPath: dir)) ?? [] {
                         let p = dir + "/" + name
-                        var st = stat()
-                        guard stat(p, &st) == 0 else { continue }
-                        let kind = st.st_mode & S_IFMT
-                        if kind == S_IFDIR { stack.append(p); continue }
-                        guard kind == S_IFREG, name.hasSuffix(".jsonl"),
-                              seenFiles.insert("\(st.st_dev):\(st.st_ino)").inserted else { continue }
-                        let ms = Int(st.st_mtimespec.tv_sec) * 1000 + Int(st.st_mtimespec.tv_nsec) / 1_000_000
-                        out.append((p, Int(st.st_size), ms))
+                        guard case .ok(let fi) = fileInfo(p) else { continue }
+                        if fi.isDirectory { stack.append(p); continue }
+                        guard fi.isRegularFile, name.hasSuffix(".jsonl"), seenFiles.insert(fi.identity).inserted else { continue }
+                        out.append((p, fi.size, fi.mtimeMs))
                     }
                 }
             }
@@ -751,28 +746,24 @@ fileprivate func tsResolveGitRoot(_ cwd: String) -> (String, Bool) {
     var sure = true
     while !dir.isEmpty {
         let git = (dir == "/" ? "" : dir) + "/.git"
-        var st = stat()
-        if stat(git, &st) == 0 {
-            if (st.st_mode & S_IFMT) == S_IFREG, let s = try? String(contentsOfFile: git, encoding: .utf8),
+        let gi = fileInfo(git)
+        if case .ok(let info) = gi {
+            if info.isRegularFile, let s = try? String(contentsOfFile: git, encoding: .utf8),
                let line = s.split(separator: "\n").first, line.hasPrefix("gitdir:") {
                 var gd = line.dropFirst("gitdir:".count).trimmingCharacters(in: .whitespaces)
-                if !gd.hasPrefix("/") { gd = dir + "/" + gd }
+                if !isAbsolutePath(gd) { gd = dir + "/" + gd }       // Windows 上 git 写的是 C:/repo/.git/worktrees/x
                 if let r = gd.range(of: "/.git/worktrees/") { return (tsRealPath(String(gd[..<r.lowerBound])), true) }
             }
             return (tsRealPath(dir), true)
         }
-        if errno == EPERM || errno == EACCES { sure = false }
+        if case .denied = gi { sure = false }
         if dir == "/" { break }
         dir = (dir as NSString).deletingLastPathComponent
     }
     return (cwd, sure)
 }
 
-fileprivate func tsRealPath(_ p: String) -> String {
-    guard let r = realpath(p, nil) else { return p }
-    defer { free(r) }
-    return String(cString: r)
-}
+fileprivate func tsRealPath(_ p: String) -> String { realPath(p) }
 
 /// 项目显示名：最后一级目录名（主目录显示 ~）；重名时带上父目录，再重名用完整路径
 fileprivate func tsDisplayNames(_ roots: [String]) -> [String: String] {

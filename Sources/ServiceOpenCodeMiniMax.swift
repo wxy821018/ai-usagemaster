@@ -124,7 +124,7 @@ struct OpenCodeGoService: UsageService {
 
     /// OpenCode 数据目录：$XDG_DATA_HOME/opencode，否则 ~/.local/share/opencode（Windows 上同样是 %USERPROFILE%\.local\share\opencode）
     static func dataDir(env: [String: String], home: String = NSHomeDirectory()) -> String {
-        if let x = env["XDG_DATA_HOME"]?.trimmingCharacters(in: .whitespacesAndNewlines), x.hasPrefix("/") {
+        if let x = env["XDG_DATA_HOME"]?.trimmingCharacters(in: .whitespacesAndNewlines), isAbsolutePath(x) {
             return (x as NSString).appendingPathComponent("opencode")
         }
         return home + "/.local/share/opencode"
@@ -164,7 +164,7 @@ struct OpenCodeGoService: UsageService {
         }
         if let o = env["OPENCODE_DB"]?.trimmingCharacters(in: .whitespacesAndNewlines), !o.isEmpty {
             if o == ":memory:" { return [] }
-            let p = o.hasPrefix("/") ? o : (dataDir as NSString).appendingPathComponent(o)
+            let p = isAbsolutePath(o) ? o : (dataDir as NSString).appendingPathComponent(o)
             return isFile(p) ? [p] : []
         }
         guard let names = try? fm.contentsOfDirectory(atPath: dataDir) else { return [] }

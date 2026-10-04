@@ -8,7 +8,7 @@ import SQLite3
 // MARK: - Cursor
 
 func readCursorToken() -> String? {
-    let path = NSHomeDirectory() + "/Library/Application Support/Cursor/User/globalStorage/state.vscdb"
+    let path = appSupportRoot + "/Cursor/User/globalStorage/state.vscdb"     // Windows：%APPDATA%\Cursor\User\globalStorage
     var db: OpaquePointer?
     let uri = "file:" + (path.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? path) + "?mode=ro"
     guard sqlite3_open_v2(uri, &db, SQLITE_OPEN_READONLY | SQLITE_OPEN_URI, nil) == SQLITE_OK else {

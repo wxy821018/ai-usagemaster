@@ -1,7 +1,7 @@
 // 用量历史与统计：把每次抓到的百分比追加进 history.jsonl，据此算消耗速度、预测用完时间、统计"重置时还剩多少没用"、每日消耗。
 // 本模块只做本地统计，不涉及任何服务协议，也没有参考 Orca（MIT，Copyright (c) 2026 Lovecast Inc.）的代码。
 //
-// 文件：~/Library/Application Support/UsageMaster/history.jsonl（权限 600），每行一条：
+// 文件：<appDataDir>/history.jsonl（macOS ~/Library/Application Support/UsageMaster，Windows %APPDATA%\UsageMaster；权限 600），每行一条：
 //   {"a":"账号","k":"weekly","p":42.5,"r":1790000000,"s":"claude","t":1789990000,"w":"weekly_all"}
 //   t = 读数时间、r = 该窗口的重置时间（Unix 秒，可缺省）、p = 已用百分比、k = 窗口类别（WindowKind，可缺省）。超过 5MB 时丢掉最旧的一半。
 // 文件里存的账号与窗口都是标识，不存随界面语言变化的文字；显示时用 historyWindowName / historyAccountName 换成当前语言。
@@ -39,7 +39,7 @@ struct WasteItem: Equatable {
 // MARK: - 参数
 
 /// 历史文件位置。测试可改成临时文件；各函数也都接受 file: 参数
-var historyFileURL = URL(fileURLWithPath: NSHomeDirectory() + "/Library/Application Support/UsageMaster/history.jsonl")
+var historyFileURL = URL(fileURLWithPath: appDataDir + "/history.jsonl")
 /// 文件超过这个大小就丢掉最旧的一半
 var historyMaxBytes = 5 * 1024 * 1024
 let historyMinInterval: TimeInterval = 60          // 同一窗口两次记录至少隔 60 秒
@@ -305,14 +305,14 @@ private struct LossyHistoryLine: Decodable {
 
 /// 用 open(2) 带 0600 创建/写入：新建的文件一开始就是 600，没有先 644 再改的空档
 private func writePrivateFile(_ path: String, _ data: Data, append: Bool) -> Bool {
-    let fd = open(path, O_WRONLY | O_CREAT | (append ? O_APPEND : O_TRUNC), 0o600)
+    let fd = open(path, O_WRONLY | O_CREAT | openBinaryFlag | (append ? O_APPEND : O_TRUNC), 0o600)
     guard fd >= 0 else { return false }
     defer { close(fd) }
     return data.withUnsafeBytes { (buf: UnsafeRawBufferPointer) -> Bool in
         guard let base = buf.baseAddress else { return true }
         var off = 0
         while off < buf.count {
-            let n = Darwin.write(fd, base + off, buf.count - off)
+            let n = writeFD(fd, base + off, buf.count - off)
             if n <= 0 { return false }
             off += n
         }
@@ -439,7 +439,7 @@ private final class HistoryStore: @unchecked Sendable {
             if let line = encodeHistoryLine(e) { out.append(line); out.append(0x0A) }
         }
         let tmp = url.deletingLastPathComponent().appendingPathComponent(".history-\(UUID().uuidString).tmp").path
-        guard writePrivateFile(tmp, out, append: false), rename(tmp, url.path) == 0 else {
+        guard writePrivateFile(tmp, out, append: false), replaceFile(tmp, url.path) else {
             try? FileManager.default.removeItem(atPath: tmp)
             return
         }

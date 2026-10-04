@@ -61,13 +61,8 @@ func keychainAccount() -> String {
     return u.range(of: #"^[a-zA-Z0-9._-]+$"#, options: .regularExpression) != nil ? u : "claude-code-user"
 }
 
-#if os(Windows)
-let orcaClaudeAccountsDir = (ProcessInfo.processInfo.environment["APPDATA"] ?? NSHomeDirectory() + "/AppData/Roaming") + "/orca/claude-accounts"
-let usageMasterSecretsDir = (ProcessInfo.processInfo.environment["APPDATA"] ?? NSHomeDirectory() + "/AppData/Roaming") + "/UsageMaster/secrets"
-#else
-let orcaClaudeAccountsDir = NSHomeDirectory() + "/Library/Application Support/orca/claude-accounts"
-let usageMasterSecretsDir = NSHomeDirectory() + "/Library/Application Support/UsageMaster/secrets"   // macOS 不用：都在钥匙串
-#endif
+let orcaClaudeAccountsDir = appSupportRoot + "/orca/claude-accounts"
+let usageMasterSecretsDir = appDataDir + "/secrets"     // 只有 Windows 用；macOS 上 UsageMaster 自己的条目都在钥匙串
 
 /// 区分"没有这份凭据"和"有，但读不出合法 JSON"：后者绝不能当成空的去覆盖
 enum CredentialRead { case missing, unreadable, ok([String: Any]) }
@@ -175,9 +170,8 @@ func readCredentialStrict(_ r: CredentialRef) -> CredentialRead {
     return .ok(obj)
 }
 
-/// 先写同目录的临时文件，再整体替换（MoveFileEx + REPLACE_EXISTING：同一卷上是原子的）。
-/// Claude Code 在每次请求前看这个文件的修改时间，读到的只会是旧的或新的完整内容，不会是半截。
-/// 文件可能正被别的进程短暂打开，替换失败时重试几次。写完回读一致才算成功。
+/// 先写同目录的临时文件，再整体替换（replaceFile：MoveFileEx，目标正被打开时重试几次）。
+/// Claude Code 在每次请求前看这个文件的修改时间，读到的只会是旧的或新的完整内容，不会是半截。写完回读一致才算成功。
 func writeCredential(_ r: CredentialRef, _ obj: [String: Any]) -> Bool {
     guard var data = try? JSONSerialization.data(withJSONObject: obj) else { return false }
     if r.encrypted {
@@ -188,17 +182,7 @@ func writeCredential(_ r: CredentialRef, _ obj: [String: Any]) -> Bool {
     try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
     let tmp = r.file + ".tmp-" + UUID().uuidString.prefix(8)
     guard (try? data.write(to: URL(fileURLWithPath: tmp))) != nil else { return false }
-    var replaced = false
-    for _ in 0..<10 {
-        replaced = tmp.withCString(encodedAs: UTF16.self) { from in
-            r.file.withCString(encodedAs: UTF16.self) { to in
-                MoveFileExW(from, to, DWORD(MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
-            }
-        }
-        if replaced { break }
-        Thread.sleep(forTimeInterval: 0.1)
-    }
-    guard replaced else { try? FileManager.default.removeItem(atPath: tmp); return false }
+    guard replaceFile(tmp, r.file) else { try? FileManager.default.removeItem(atPath: tmp); return false }
     guard let back = readCredential(r) else { return false }
     return jsonEqual(back, obj)
 }
