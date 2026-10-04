@@ -4,22 +4,23 @@
 // 对方一重新部署就失效；MiniMax 那条前面有 Akamai，要整串粘贴 cookie 还得伪装浏览器 UA，都太脆。
 //
 // OpenCode Go：GET https://opencode.ai/zen/go/v1/usage（Authorization: Bearer <API key>）
-//   key 依次取（第一个命中的生效）：UsageMaster 钥匙串 "UsageMaster-opencode-go" → OpenCode CLI 的 auth.json 里
+//   key 依次取（第一个命中的生效）：UsageMaster 自己的条目 "UsageMaster-opencode-go" → OpenCode CLI 的 auth.json 里
 //   "opencode-go" 条目 → OpenCode 的 SQLite credential 表 → 环境变量 OPENCODE_API_KEY。OpenCode 的文件只读，绝不写回。
 // MiniMax：GET <区域主机>/v1/api/openplatform/coding_plan/remains（Authorization: Bearer <API key>）
-//   key 只存在 UsageMaster 钥匙串 "UsageMaster-minimax"：{"apiKey": "...", "region": "overseas"|"cn"}。
-// 两家的 API key 都是长期静态的，没有刷新流程。key 只在内存与钥匙串里，不打印、不进错误信息。
+//   key 只存在 UsageMaster 自己的条目 "UsageMaster-minimax"：{"apiKey": "...", "region": "overseas"|"cn"}。
+// 两家的 API key 都是长期静态的，没有刷新流程。key 只在内存与凭据存储里（macOS 钥匙串 / Windows DPAPI 加密文件，见 CredentialStore.swift），
+// 不打印、不进错误信息。
 
 import Foundation
-import Security
 import SQLite3
 
-// MARK: - UsageMaster 自己存的 API key（钥匙串条目 "UsageMaster-<服务>"）
+// MARK: - UsageMaster 自己存的 API key（条目 "UsageMaster-<服务>"）
 
-/// 条目名。服务名只许字母数字和 ._-：它会被拼进 `security -i` 的命令行（writeKeychainJSON 里用双引号包着，引号本身不能出现）
-private func apiKeyKeychainName(_ service: String) -> String? {
+/// 条目位置。服务名只许字母数字和 ._-：macOS 上它会被拼进 `security -i` 的命令行（用双引号包着，引号本身不能出现），
+/// Windows 上它是文件名的一部分
+private func apiKeyCred(_ service: String) -> CredentialRef? {
     guard service.range(of: #"^[A-Za-z0-9._-]{1,64}$"#, options: .regularExpression) != nil else { return nil }
-    return "UsageMaster-" + service
+    return .usageMaster("UsageMaster-" + service)
 }
 
 /// 粘贴来的 key：去首尾空白、去掉误带的 "Bearer " 前缀；中间有空白或控制字符的一律不收（会破坏请求头）
@@ -32,36 +33,29 @@ private func cleanAPIKey(_ raw: String) -> String? {
     return k
 }
 
-/// 只看条目在不在：进程内查属性、不取机密（不会弹钥匙串授权框），约 1ms。
-/// 不用 runCommand 起 security 子进程：实测那条路要 85–105ms，isConfigured 的 100ms 预算不够
+/// 只看条目在不在，不取机密（macOS 不会弹钥匙串授权框，约 1ms）
 private func apiKeyItemExists(_ service: String) -> Bool {
-    guard let name = apiKeyKeychainName(service) else { return false }
-    let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
-                            kSecAttrService as String: name,
-                            kSecAttrAccount as String: keychainAccount(),
-                            kSecMatchLimit as String: kSecMatchLimitOne,
-                            kSecReturnAttributes as String: true]
-    var out: CFTypeRef?
-    return SecItemCopyMatching(q as CFDictionary, &out) == errSecSuccess
+    guard let r = apiKeyCred(service) else { return false }
+    return credentialExists(r)
 }
 
 /// 读出条目里的 key 与整份 JSON（region 等非机密设置也在里面）
 private func readAPIKeyItem(_ service: String) -> (apiKey: String, item: [String: Any])? {
-    guard let name = apiKeyKeychainName(service), let obj = readKeychainJSON(service: name),
+    guard let r = apiKeyCred(service), let obj = readCredential(r),
           let raw = obj["apiKey"] as? String, let key = cleanAPIKey(raw) else { return nil }
     return (key, obj)
 }
 
-/// 菜单「粘贴 API key」调用：写进 UsageMaster 自己的钥匙串条目 "UsageMaster-<service>"，
-/// 经 `security -i` 从标准输入写入（key 不进进程参数），回读一致才返回 true。region 为空则不写（读时按默认处理）。
+/// 菜单「粘贴 API key」调用：写进 UsageMaster 自己的条目 "UsageMaster-<service>"
+/// （macOS 经 `security -i` 从标准输入写入，key 不进进程参数），回读一致才返回 true。region 为空则不写（读时按默认处理）。
 func saveServiceAPIKey(service: String, apiKey: String, region: String?) -> Bool {
-    guard let name = apiKeyKeychainName(service), let key = cleanAPIKey(apiKey) else { return false }
+    guard let r = apiKeyCred(service), let key = cleanAPIKey(apiKey) else { return false }
     var obj: [String: Any] = ["apiKey": key]
     if let r = region?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(), !r.isEmpty {
         guard r.range(of: #"^[a-z0-9_-]{1,32}$"#, options: .regularExpression) != nil else { return false }
         obj["region"] = r
     }
-    return writeKeychainJSON(service: name, obj)
+    return writeCredential(r, obj)
 }
 
 /// 菜单用：UsageMaster 自己的条目里有没有存 key（只查属性，不取机密）
@@ -72,8 +66,8 @@ func storedServiceRegion(_ service: String) -> String? { readAPIKeyItem(service)
 
 /// 菜单「删除 API key」调用：只删 UsageMaster 自己的条目，不碰 OpenCode 等别家软件的凭据
 func deleteServiceAPIKey(service: String) {
-    guard let name = apiKeyKeychainName(service) else { return }
-    _ = runCommand("/usr/bin/security", ["delete-generic-password", "-s", name, "-a", keychainAccount()], timeout: 8)
+    guard let r = apiKeyCred(service) else { return }
+    deleteCredential(r)
 }
 
 // MARK: - 小工具
@@ -343,13 +337,14 @@ struct OpenCodeGoService: UsageService {
         check(httpError(code: 500, body: Data()) == L("查询用量失败：HTTP 500", "Usage request failed: HTTP 500"),
               L("其它状态码文案不对", "Wrong message for other status codes"))
 
-        // 3. key 清洗与钥匙串条目名
+        // 3. key 清洗与条目名
         check(cleanAPIKey("  sk-abc \n") == "sk-abc", L("key 首尾空白没去掉", "Leading/trailing whitespace not stripped from key"))
         check(cleanAPIKey("Bearer sk-abc") == "sk-abc", L("误带的 Bearer 前缀没去掉", "Stray Bearer prefix not stripped"))
         check(cleanAPIKey("sk a") == nil && cleanAPIKey("") == nil && cleanAPIKey("sk\u{7}x") == nil,
               L("带空白/控制字符/空的 key 应拒收", "Keys with whitespace or control characters, and empty keys, should be rejected"))
-        check(apiKeyKeychainName("opencode-go") == "UsageMaster-opencode-go", L("钥匙串条目名不对", "Wrong keychain item name"))
-        check(apiKeyKeychainName("a\"b") == nil && apiKeyKeychainName("") == nil && apiKeyKeychainName("a b") == nil,
+        check(apiKeyCred("opencode-go")?.service == "UsageMaster-opencode-go" && apiKeyCred("opencode-go")?.encrypted == true,
+              L("条目名不对", "Wrong item name"))
+        check(apiKeyCred("a\"b") == nil && apiKeyCred("") == nil && apiKeyCred("a b") == nil,
               L("非法服务名应拒收", "Invalid service names should be rejected"))
         check(!saveServiceAPIKey(service: "a\"b", apiKey: "k", region: nil), L("非法服务名保存应失败", "Saving with an invalid service name should fail"))
         check(!saveServiceAPIKey(service: "opencode-go", apiKey: "   ", region: nil), L("空 key 保存应失败", "Saving an empty key should fail"))

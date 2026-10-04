@@ -146,7 +146,7 @@ func listManagedAccountsReadOnly() -> [ManagedAccount] {
     return names.sorted().compactMap { name in
         guard !name.hasPrefix(".") else { return nil }
         let dir = accountsRoot + "/" + name
-        var a = ManagedAccount(dir: dir, service: keychainService(forConfigDir: dir))
+        var a = ManagedAccount(dir: dir, cred: .claude(configDir: dir))
         if let oa = readJSONFile(dir + "/.claude.json")?["oauthAccount"] as? [String: Any] {
             a.email = oa["emailAddress"] as? String
             a.org = oa["organizationName"] as? String

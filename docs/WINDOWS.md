@@ -56,7 +56,7 @@ Found by the trial build and self-test. Each is a small, local change; none touc
 
 | Where | macOS behaviour | Windows change |
 |---|---|---|
-| `Claude.swift`, `ServiceOpenCodeMiniMax.swift` | Keychain through `/usr/bin/security` and `SecItemCopyMatching` | A credential store interface: Keychain on macOS, the `.credentials.json` files (plus Windows Credential Manager or DPAPI for UsageMaster's own copies and API keys) on Windows |
+| ~~`Claude.swift`, `ServiceOpenCodeMiniMax.swift`~~ | ~~Keychain through `/usr/bin/security` and `SecItemCopyMatching`~~ | **Done**, see "Credential store" below |
 | `History.swift` line 442 | POSIX `rename()` replaces the target | CRT `rename` fails when the target exists: use `MoveFileExW` with `MOVEFILE_REPLACE_EXISTING` |
 | `History.swift` `open()` | Binary by default | Add `_O_BINARY`, or `\n` is written as `\r\n` |
 | `TokenStats.swift` | Deduplicates directories and files by `st_dev:st_ino` | `st_ino` is always 0 on Windows, so every file looks the same and only one log file is counted. Use the resolved path or the NTFS file ID |
@@ -71,6 +71,26 @@ Found by the trial build and self-test. Each is a small, local change; none touc
 | `Claude.swift` `openLoginTerminal` | `.command` script opened with `NSWorkspace` | A `.cmd` script started with `cmd /c start`, with `BROWSER` as above |
 | Data and cache paths | `~/Library/Application Support/UsageMaster`, `~/Library/Application Support/Cursor`, `~/Library/Application Support/orca` | `%APPDATA%` equivalents |
 
+## Credential store (done)
+
+All credential access goes through `Sources/CredentialStore.swift`. A `CredentialRef` says where one credential lives: a Keychain item (service and account) on macOS, a JSON file on Windows. Five functions cover every use: `readCredential`, `readCredentialStrict` (tells "missing" from "unreadable"), `writeCredential`, `deleteCredential` and `credentialExists`.
+
+| Credential | macOS | Windows |
+|---|---|---|
+| Default Claude Code sign-in | Keychain `Claude Code-credentials` | `%USERPROFILE%\.claude\.credentials.json` |
+| Account added through AI UsageMaster | Keychain `Claude Code-credentials-<hash of config dir>` | `<config dir>\.credentials.json` |
+| Orca account (read only) | Keychain `Orca Claude Code Managed Credentials`, account = Orca id | `%APPDATA%\orca\claude-accounts\<id>\auth\.credentials.json` |
+| API keys entered in AI UsageMaster | Keychain `UsageMaster-<service>` | `%APPDATA%\UsageMaster\secrets\UsageMaster-<service>.bin`, DPAPI-encrypted |
+
+The macOS side keeps the existing item names and accounts, so nothing stored before the change has to be migrated. On Windows a write goes to a temporary file in the same folder and then replaces the target with `MoveFileExW` (retried briefly if another process has the file open); both systems read the result back before reporting success.
+
+Two Windows-specific findings came out of this step:
+
+- **Orca detection.** On macOS the default sign-in counts as placed by Orca when `~/.claude/.credentials.json` holds the same refresh token as the Keychain. On Windows that file *is* the default sign-in, so the same check would always be true and a switch would never save the current account's refreshed token. On Windows the default sign-in is compared with each account under `%APPDATA%\orca\claude-accounts` instead. The Orca CLI ships as `%LOCALAPPDATA%\Programs\orca\resources\bin\orca.exe` and prints the same `account list --json` structure as on macOS.
+- **Comparing JSON.** Windows Foundation (Swift 6.4) reports `NSDictionary(["n": 1]).isEqual(to:)` as false against the same dictionary read back from JSON, because a Swift `Int` or `Double` does not compare equal to the `NSNumber` it becomes. Read-back checks therefore compare the two objects serialized with sorted keys (`jsonEqual`).
+
+Self-test: on Windows every credential and switching test passes (43 lines pass; the 18 failures left are the Codex and token statistics items in the table above). On macOS 15.6 with Swift 6.2.4 all 45 lines pass, the 42 from before plus 3 new ones (delete then read as missing, encrypted item round trip, Orca present but not the source of the default sign-in). Temporary Keychain items and files are removed afterwards. `runCommand` no longer replaces `PATH` on Windows, so the Orca CLI can find the system folders.
+
 ## Not tested yet
 
 - Whether a running session refreshes `oauthAccount` from `~/.claude.json` after a switch. This only affects the name it shows, not which account it uses.
@@ -79,7 +99,7 @@ Found by the trial build and self-test. Each is a small, local change; none touc
 
 ## Plan
 
-1. Keep one Swift codebase. Put the items above behind small platform files (credential store, paths, notifications, process helpers) and leave everything else shared.
+1. Keep one Swift codebase. Put the items above behind small platform files (credential store: done; paths, notifications, process helpers: next) and leave everything else shared.
 2. First Windows release: the command line (`--print`, `--stats`, `--selftest`) and the Claude Code status line, which shows usage inside the terminal without any tray UI.
 3. Then a tray icon drawn on the fly with the tightest percentage (same orange at 75% and red at 90%), the summary line as the tooltip, and a flyout panel with the per-account bars. It can be a thin shell that calls the core for JSON, so the UI stays separate from the logic. Start at login through `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`.
 4. Switching last, with the Orca rule above, since Orca already manages accounts on many Windows machines.

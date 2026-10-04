@@ -247,7 +247,9 @@ func runCommand(_ path: String, _ args: [String], timeout: TimeInterval) -> Data
     p.executableURL = URL(fileURLWithPath: path)
     p.arguments = args
     var env = ProcessInfo.processInfo.environment
+    #if !os(Windows)   // Windows 上沿用原来的 PATH（系统目录在里面）
     env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+    #endif
     p.environment = env
     let out = Pipe()
     p.standardOutput = out

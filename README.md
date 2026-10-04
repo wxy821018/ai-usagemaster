@@ -77,6 +77,7 @@ Choose **Add Claude Account…** in the menu. A Terminal window runs the officia
 
 - Tokens live only in the macOS Keychain and are only sent to the matching vendor over HTTPS. Network sessions keep no disk cache, do not follow redirects, and nothing is logged.
 - Keychain writes go through the standard input of `security -i`, so tokens do not appear in process arguments. The one exception is an item larger than about 4 KB (Claude Code's own credentials once many MCP servers are signed in): `security -i` cuts long lines, so, like Claude Code itself, that single call passes the value as an argument.
+- Windows (port in progress) has no Keychain. There, Claude Code's and Orca's sign-ins are the plain JSON files those tools write and read themselves, and AI UsageMaster reads and writes them in place; API keys entered in AI UsageMaster are encrypted with DPAPI for the current Windows user. All credential access goes through one file, `Sources/CredentialStore.swift`.
 - Other tools' sign-in files are only read, never written. API keys entered in the menu go into the Keychain. Gemini access tokens refreshed by AI UsageMaster stay in memory.
 - **Refreshing only touches AI UsageMaster's own copies of the credentials**, so the sign-in of the Claude Code you use day to day is not affected.
 - Switching accounts changes two things: the Claude sign-in (`claudeAiOauth`) inside the default Keychain item `Claude Code-credentials`, and the `oauthAccount` entry in `~/.claude.json`. Everything else in that item, such as MCP server sign-ins, stays as it is. Before switching, the current account's sign-in (which Claude Code may have refreshed) is saved back to that account's own Keychain item. All checks run before anything is written, the change is made while holding the same lock Claude Code uses for its own credential writes, and any failure restores the previous state. An account that needs to sign in again cannot be switched to.
@@ -86,7 +87,7 @@ Choose **Add Claude Account…** in the menu. A Terminal window runs the officia
 ## Known limitations
 
 - A personal project, not affiliated with Anthropic or Cursor. The endpoints it uses are not publicly documented and may change at any time.
-- macOS only for now. On Windows, Claude Code keeps credentials in `%USERPROFILE%\.claude\.credentials.json` (or in the `CLAUDE_CONFIG_DIR` directory when that is set), and Cursor keeps its database at `%APPDATA%\Cursor\User\globalStorage\state.vscdb`. A port is under way: the non-UI code already builds with Swift 6.4 for Windows and runs `--print` and `--stats` there; [docs/WINDOWS.md](docs/WINDOWS.md) lists what has been verified and the changes still needed.
+- macOS only for now. On Windows, Claude Code keeps credentials in `%USERPROFILE%\.claude\.credentials.json` (or in the `CLAUDE_CONFIG_DIR` directory when that is set), and Cursor keeps its database at `%APPDATA%\Cursor\User\globalStorage\state.vscdb`. A port is under way: the non-UI code already builds with Swift 6.4 for Windows and runs `--print` and `--stats` there, and credential storage and account switching pass the self-test on both systems; [docs/WINDOWS.md](docs/WINDOWS.md) lists what has been verified and the changes still needed.
 - Automatic switching only covers accounts added through AI UsageMaster.
 
 ## Roadmap

@@ -99,7 +99,7 @@ func fetchAll(force: Bool = false) async -> Snapshot {
     if let st = orca, case .ok(var accts) = claude, !managed.isEmpty {
         for i in accts.indices {
             guard let m = managed.first(where: { $0.dir == accts[i].configDir }),
-                  let rt = (readKeychainJSON(service: m.service)?["claudeAiOauth"] as? [String: Any])?["refreshToken"] as? String else { continue }
+                  let rt = (readCredential(m.cred)?["claudeAiOauth"] as? [String: Any])?["refreshToken"] as? String else { continue }
             if sharesRefreshTokenWithOrca(email: m.email, refreshToken: rt, state: st) {
                 accts[i].sharedWithOrca = true
                 accts[i].notes.insert(L("⚠︎ 和 Orca 共用同一份登录（任一边刷新都会把另一边挤下线），请点「重新登录」", "⚠︎ Shares its sign-in with Orca (a refresh on either side signs the other out); choose Sign In Again"), at: 0)

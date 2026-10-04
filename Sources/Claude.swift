@@ -12,81 +12,15 @@ let legacyAccountsRoot = NSHomeDirectory() + "/.config/usagebar/claude"   // 旧
 let oauthClientId = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"   // Claude Code 的公开 OAuth client（Orca 刷新也用它）
 let tokenURL = URL(string: "https://platform.claude.com/v1/oauth/token")!
 
-/// 与 Claude Code 2.1.x 相同的命名：Claude Code-credentials-<sha256(配置目录, NFC) 前 8 位>
-func keychainService(forConfigDir dir: String) -> String {
-    let nfc = dir.precomposedStringWithCanonicalMapping
-    let hex = SHA256.hash(data: Data(nfc.utf8)).map { String(format: "%02x", $0) }.joined()
-    return "Claude Code-credentials-" + hex.prefix(8)
-}
-
-/// Claude Code 用 $USER 当钥匙串 account 字段
-func keychainAccount() -> String {
-    let u = ProcessInfo.processInfo.environment["USER"] ?? NSUserName()
-    return u.range(of: #"^[a-zA-Z0-9._-]+$"#, options: .regularExpression) != nil ? u : "claude-code-user"
-}
-
-func readKeychainJSON(service: String) -> [String: Any]? {
-    guard let data = runCommand("/usr/bin/security", ["find-generic-password", "-s", service, "-a", keychainAccount(), "-w"], timeout: 8),
-          let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
-    return obj
-}
-
-/// 读钥匙串并区分"没有这个条目"和"有，但读不出合法 JSON"：后者绝不能当成空的去覆盖
-enum KeychainRead { case missing, unreadable, ok([String: Any]) }
-func readKeychainStrict(service: String) -> KeychainRead {
-    let p = Process()
-    p.executableURL = URL(fileURLWithPath: "/usr/bin/security")
-    p.arguments = ["find-generic-password", "-s", service, "-a", keychainAccount(), "-w"]
-    let out = Pipe()
-    p.standardOutput = out
-    p.standardError = FileHandle.nullDevice
-    do { try p.run() } catch { return .unreadable }
-    let data = out.fileHandleForReading.readDataToEndOfFile()
-    p.waitUntilExit()
-    if p.terminationStatus == 44 { return .missing }                 // errSecItemNotFound
-    guard p.terminationStatus == 0, let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return .unreadable }
-    return .ok(obj)
-}
-
-/// 写钥匙串（-X 十六进制）。一般经 `security -i` 从标准输入写，令牌不出现在进程参数里；
-/// 但 `security -i` 一行最多约 4 KB，更长的会被截断、把半截 JSON 写进条目（默认凭据带着很多 MCP 登录时就会这样），
-/// 所以超过 4000 字符时和 Claude Code 自己一样改用参数形式（参数只在这一瞬间对本机同一用户可见）。写完回读一致才算成功。
-func writeKeychainJSON(service: String, _ obj: [String: Any]) -> Bool {
-    guard let data = try? JSONSerialization.data(withJSONObject: obj) else { return false }
-    let hex = data.map { String(format: "%02x", $0) }.joined()
-    let cmd = "add-generic-password -U -a \"\(keychainAccount())\" -s \"\(service)\" -X \"\(hex)\"\n"
-    if cmd.utf8.count > 4000 {
-        guard runCommand("/usr/bin/security", ["add-generic-password", "-U", "-a", keychainAccount(), "-s", service, "-X", hex], timeout: 8) != nil,
-              let back = readKeychainJSON(service: service) else { return false }
-        return NSDictionary(dictionary: back).isEqual(to: obj)
-    }
-    let p = Process()
-    p.executableURL = URL(fileURLWithPath: "/usr/bin/security")
-    p.arguments = ["-i"]
-    let input = Pipe()
-    p.standardInput = input
-    p.standardOutput = FileHandle.nullDevice
-    p.standardError = FileHandle.nullDevice
-    do { try p.run() } catch { return false }
-    input.fileHandleForWriting.write(Data(cmd.utf8))
-    try? input.fileHandleForWriting.close()      // 关闭标准输入即结束交互模式（security -i 没有 quit 命令，写了会让退出码变 1）
-    let done = DispatchSemaphore(value: 0)
-    DispatchQueue.global().async { p.waitUntilExit(); done.signal() }
-    if done.wait(timeout: .now() + 8) == .timedOut { p.terminate(); return false }
-    guard p.terminationStatus == 0, let back = readKeychainJSON(service: service) else { return false }
-    return NSDictionary(dictionary: back).isEqual(to: obj)          // 回读一致才算成功
-}
-
 struct ManagedAccount {
     let dir: String
-    let service: String
+    let cred: CredentialRef          // 这个账号自己的那份凭据（UsageMaster 刷新它，不碰默认那份）
     var email: String?
     var org: String?
     var orgUuid: String?
     var oauthAccount: [String: Any]?
 }
 
-let defaultService = "Claude Code-credentials"          // 平时直接运行 `claude` 用的那份凭据
 let defaultConfigPath = NSHomeDirectory() + "/.claude.json"
 
 func readJSONFile(_ path: String) -> [String: Any]? {
@@ -114,12 +48,16 @@ func migrateLegacyAccounts() {
     for name in names where !name.hasPrefix(".") {
         let oldDir = legacyAccountsRoot + "/" + name, newDir = accountsRoot + "/" + name
         guard !fm.fileExists(atPath: newDir) else { continue }
-        let oldSvc = keychainService(forConfigDir: oldDir), newSvc = keychainService(forConfigDir: newDir)
-        if let creds = readKeychainJSON(service: oldSvc) {
-            guard writeKeychainJSON(service: newSvc, creds) else { continue }   // 写不进新条目就先不搬
+        let oldCred = CredentialRef.claude(configDir: oldDir), newCred = CredentialRef.claude(configDir: newDir)
+        #if os(macOS)   // Windows 上凭据就在目录里，随目录一起搬
+        if let creds = readCredential(oldCred) {
+            guard writeCredential(newCred, creds) else { continue }   // 写不进新条目就先不搬
         }
+        #endif
         do { try fm.moveItem(atPath: oldDir, toPath: newDir) } catch { continue }
-        _ = runCommand("/usr/bin/security", ["delete-generic-password", "-s", oldSvc, "-a", keychainAccount()], timeout: 8)
+        #if os(macOS)
+        deleteCredential(oldCred)
+        #endif
     }
     if (try? fm.contentsOfDirectory(atPath: legacyAccountsRoot))?.isEmpty == true {
         try? fm.removeItem(atPath: legacyAccountsRoot)
@@ -127,15 +65,15 @@ func migrateLegacyAccounts() {
     }
 }
 
-/// 删除一个账号目录及其钥匙串凭据（只用于 UsageMaster 自己建的目录）
+/// 删除一个账号目录及其凭据（只用于 UsageMaster 自己建的目录）
 func removeManagedAccount(_ a: ManagedAccount) {
-    _ = runCommand("/usr/bin/security", ["delete-generic-password", "-s", a.service, "-a", keychainAccount()], timeout: 8)
+    deleteCredential(a.cred)
     try? FileManager.default.removeItem(atPath: a.dir)
 }
 
 /// 同一账号的两份凭据里哪份更新：有刷新令牌的优先，其次到期时间更晚的（通常就是刚登录的那份）
 private func credentialRank(_ a: ManagedAccount) -> (Int, Double) {
-    guard let c = readKeychainJSON(service: a.service)?["claudeAiOauth"] as? [String: Any] else { return (0, 0) }
+    guard let c = readCredential(a.cred)?["claudeAiOauth"] as? [String: Any] else { return (0, 0) }
     let hasRT = ((c["refreshToken"] as? String)?.isEmpty == false) ? 1 : 0
     return (hasRT, num(c["expiresAt"]) ?? 0)
 }
@@ -152,7 +90,7 @@ func listManagedAccounts() -> [ManagedAccount] {
         let dir = accountsRoot + "/" + name
         var isDir: ObjCBool = false
         guard !name.hasPrefix("."), fm.fileExists(atPath: dir, isDirectory: &isDir), isDir.boolValue else { continue }
-        var a = ManagedAccount(dir: dir, service: keychainService(forConfigDir: dir))
+        var a = ManagedAccount(dir: dir, cred: .claude(configDir: dir))
         // 登录后 Claude Code 会在配置目录里写 .claude.json，含 oauthAccount（邮箱、组织，不含令牌）
         if let oa = readJSONFile(dir + "/.claude.json")?["oauthAccount"] as? [String: Any] {
             a.email = oa["emailAddress"] as? String
@@ -173,7 +111,7 @@ func listManagedAccounts() -> [ManagedAccount] {
                 continue
             }
             seen.insert(key)
-        } else if readKeychainJSON(service: a.service) == nil,
+        } else if readCredential(a.cred) == nil,
                   let attrs = try? fm.attributesOfItem(atPath: dir), let created = attrs[.creationDate] as? Date,
                   Date().timeIntervalSince(created) > 1800 {
             // 半小时还没登录成功的空目录：清掉
@@ -206,9 +144,10 @@ func withClaudeStorageLock<T>(dir: String, _ body: () -> T) -> T? {
 
 /// 切换时用到的位置（自检里换成临时的，不碰真实登录）
 struct SwitchTargets {
-    var defaultService = "Claude Code-credentials"
+    var defaultCred = CredentialRef.claudeDefault
     var configPath = NSHomeDirectory() + "/.claude.json"
     var claudeDir = NSHomeDirectory() + "/.claude"
+    var orcaAccountsDir = orcaClaudeAccountsDir     // Windows 判断「默认登录是不是 Orca 放的」用
     var nudge = true
 }
 
@@ -219,7 +158,7 @@ struct SwitchTargets {
 /// 任何一步失败都恢复原样并返回原因。在用账号的令牌由 Claude Code 自己刷新，UsageMaster 不刷新它那份。
 func switchDefault(to x: ManagedAccount, all: [ManagedAccount], targets: SwitchTargets = SwitchTargets()) -> String? {
     // 只读检查
-    guard case .ok(let xItem) = readKeychainStrict(service: x.service), let xc = xItem["claudeAiOauth"] as? [String: Any],
+    guard case .ok(let xItem) = readCredentialStrict(x.cred), let xc = xItem["claudeAiOauth"] as? [String: Any],
           let rt = xc["refreshToken"] as? String, !rt.isEmpty else {
         return L("这个账号还没登录完成或需要重新登录，没有切换", "This account is not signed in (or needs to sign in again); nothing was switched")
     }
@@ -231,7 +170,7 @@ func switchDefault(to x: ManagedAccount, all: [ManagedAccount], targets: SwitchT
     }
     let result: String?? = withClaudeStorageLock(dir: targets.claudeDir) { () -> String? in
         let d: [String: Any]
-        switch readKeychainStrict(service: targets.defaultService) {
+        switch readCredentialStrict(targets.defaultCred) {
         case .missing: d = [:]
         case .unreadable: return L("读不出默认凭据，没有切换", "Could not read the default credentials; nothing was switched")
         case .ok(let o): d = o
@@ -239,31 +178,31 @@ func switchDefault(to x: ManagedAccount, all: [ManagedAccount], targets: SwitchT
         // 1) 当前账号：只存回 claudeAiOauth。
         //    例外：默认登录是 Orca 放进去的（它会把同一份写进 <配置目录>/.credentials.json，Claude Code 在 Mac 上不写这个文件）。
         //    那是 Orca 自己的授权，存一份到我们这里会变成两边共用一个刷新令牌，谁先刷新另一边就作废，所以不存，原样留给 Orca。
-        var restoreCur: (service: String, item: KeychainRead)?
-        let orcaPlaced = defaultPlacedByOrca(d, credentialsFile: targets.claudeDir + "/.credentials.json")
+        var restoreCur: (cred: CredentialRef, item: CredentialRead)?
+        let orcaPlaced = defaultPlacedByOrca(d, credentialsFile: targets.claudeDir + "/.credentials.json", orcaAccountsDir: targets.orcaAccountsDir)
         if !orcaPlaced, let oaCur = readJSONFile(targets.configPath)?["oauthAccount"] as? [String: Any],
            let email = (oaCur["emailAddress"] as? String)?.lowercased(),
            let cur = all.first(where: { identityKey($0) == email + "|" + ((oaCur["organizationUuid"] as? String) ?? "") }),
            cur.dir != x.dir, let dc = d["claudeAiOauth"] as? [String: Any] {
-            let before = readKeychainStrict(service: cur.service)
+            let before = readCredentialStrict(cur.cred)
             if case .unreadable = before { return L("读不出当前账号自己的凭据，没有切换", "Could not read the current account's own credentials; nothing was switched") }
             var m: [String: Any] = [:]
             if case .ok(let o) = before { m = o }
             m["claudeAiOauth"] = dc
-            guard writeKeychainJSON(service: cur.service, m) else {
-                if case .ok(let o) = before { _ = writeKeychainJSON(service: cur.service, o) }
+            guard writeCredential(cur.cred, m) else {
+                if case .ok(let o) = before { _ = writeCredential(cur.cred, o) }
                 return L("保存当前账号的凭据失败，没有切换", "Could not save the current account's credentials; nothing was switched")
             }
-            restoreCur = (cur.service, before)
+            restoreCur = (cur.cred, before)
         }
         func undo() {
-            if !d.isEmpty { _ = writeKeychainJSON(service: targets.defaultService, d) }
-            if let r = restoreCur, case .ok(let o) = r.item { _ = writeKeychainJSON(service: r.service, o) }
+            if !d.isEmpty { _ = writeCredential(targets.defaultCred, d) }
+            if let r = restoreCur, case .ok(let o) = r.item { _ = writeCredential(r.cred, o) }
         }
         // 2) 默认凭据：只换 claudeAiOauth
         var nd = d
         nd["claudeAiOauth"] = xc
-        guard writeKeychainJSON(service: targets.defaultService, nd) else {
+        guard writeCredential(targets.defaultCred, nd) else {
             undo()
             return L("写入默认凭据失败，已恢复原样", "Could not write the default credentials; everything was restored")
         }
@@ -283,11 +222,20 @@ func switchDefault(to x: ManagedAccount, all: [ManagedAccount], targets: SwitchT
     return r
 }
 
-/// 默认登录是不是 Orca 放进去的：明文副本里的刷新令牌和默认钥匙串里的一样
-func defaultPlacedByOrca(_ d: [String: Any], credentialsFile: String) -> Bool {
-    guard let rt = (d["claudeAiOauth"] as? [String: Any])?["refreshToken"] as? String, !rt.isEmpty,
-          let f = (readJSONFile(credentialsFile)?["claudeAiOauth"] as? [String: Any])?["refreshToken"] as? String else { return false }
+/// 默认登录是不是 Orca 放进去的。
+/// macOS：明文副本 ~/.claude/.credentials.json 里的刷新令牌和默认钥匙串里的一样（Claude Code 在 Mac 上不写这个文件，Orca 写）。
+/// Windows：那个文件本身就是默认登录，拿它和自己比永远相同，所以改为和 Orca 每个账号目录里的那份比。
+func defaultPlacedByOrca(_ d: [String: Any], credentialsFile: String, orcaAccountsDir: String = orcaClaudeAccountsDir) -> Bool {
+    guard let rt = (d["claudeAiOauth"] as? [String: Any])?["refreshToken"] as? String, !rt.isEmpty else { return false }
+    #if os(Windows)
+    let ids = (try? FileManager.default.contentsOfDirectory(atPath: orcaAccountsDir)) ?? []
+    return ids.contains { id in
+        (readJSONFile(orcaAccountsDir + "/" + id + "/auth/.credentials.json")?["claudeAiOauth"] as? [String: Any])?["refreshToken"] as? String == rt
+    }
+    #else
+    guard let f = (readJSONFile(credentialsFile)?["claudeAiOauth"] as? [String: Any])?["refreshToken"] as? String else { return false }
     return f == rt
+    #endif
 }
 
 /// Orca 管着的 Claude 账号：选中的是谁、每个邮箱对应的 Orca 账号 id。没装 Orca 或它没在运行时返回 nil。只读，不含令牌。
@@ -295,7 +243,12 @@ func defaultPlacedByOrca(_ d: [String: Any], credentialsFile: String) -> Bool {
 /// prepareForClaudeLaunch → doSyncForCurrentSelection），所以它选了账号时，这里切过去也会被它改回去
 struct OrcaClaudeState { var active: String?; var ids: [String: String] }
 func orcaClaudeState() -> OrcaClaudeState? {
-    let bin = ["/opt/homebrew/bin/orca", "/usr/local/bin/orca", "/Applications/Orca.app/Contents/Resources/bin/orca"]
+    #if os(Windows)
+    let candidates = [(ProcessInfo.processInfo.environment["LOCALAPPDATA"] ?? "") + "/Programs/orca/resources/bin/orca.exe"]
+    #else
+    let candidates = ["/opt/homebrew/bin/orca", "/usr/local/bin/orca", "/Applications/Orca.app/Contents/Resources/bin/orca"]
+    #endif
+    let bin = candidates
         .first { FileManager.default.isExecutableFile(atPath: $0) }
     guard let b = bin, let data = runCommand(b, ["account", "list", "--json"], timeout: 5),
           let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
@@ -311,19 +264,9 @@ func orcaActiveClaudeEmail() -> String? { orcaClaudeState()?.active }
 /// 这个账号我们手里的刷新令牌和 Orca 那份是不是同一个。同一个就绝不能在这里刷新：刷新会让 Orca 那份作废、把它挤下线。
 /// 只在内存里比较，不保存、不输出 Orca 的任何内容
 func sharesRefreshTokenWithOrca(email: String?, refreshToken: String, state: OrcaClaudeState?,
-                                orcaService: String = "Orca Claude Code Managed Credentials") -> Bool {
-    guard let e = email?.lowercased(), let id = state?.ids[e] else { return false }
-    let p = Process()
-    p.executableURL = URL(fileURLWithPath: "/usr/bin/security")
-    p.arguments = ["find-generic-password", "-s", orcaService, "-a", id, "-w"]
-    let out = Pipe()
-    p.standardOutput = out
-    p.standardError = FileHandle.nullDevice
-    guard (try? p.run()) != nil else { return false }
-    let data = out.fileHandleForReading.readDataToEndOfFile()
-    p.waitUntilExit()
-    guard p.terminationStatus == 0, let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-          let theirs = (j["claudeAiOauth"] as? [String: Any])?["refreshToken"] as? String else { return false }
+                                orcaCred: (String) -> CredentialRef = CredentialRef.orca(id:)) -> Bool {
+    guard let e = email?.lowercased(), let id = state?.ids[e],
+          let theirs = (readCredential(orcaCred(id))?["claudeAiOauth"] as? [String: Any])?["refreshToken"] as? String else { return false }
     return theirs == refreshToken
 }
 
@@ -342,6 +285,7 @@ func switchDefaultSafely(to x: ManagedAccount, all: [ManagedAccount]) async -> S
 /// Claude Code（2.1.288 实测）每次请求前检查凭据有没有变：~/.claude/.credentials.json 存在时只看它的修改时间，
 /// 不存在时才重读钥匙串（钥匙串读取缓存 30 秒）。这个文件是钥匙串写入失败时留下的备用副本，
 /// 它在的话只改钥匙串，开着的会话察觉不到。所以文件存在时更新一下修改时间（不改内容，也不新建）。
+/// Windows 上这个文件就是默认凭据本身，切换时已经整份替换过，这里再更新一次修改时间也无妨。
 func nudgeRunningSessions() {
     let path = NSHomeDirectory() + "/.claude/.credentials.json"      // 切换改的是默认那份凭据，对应默认配置目录
     guard FileManager.default.fileExists(atPath: path) else { return }
@@ -374,10 +318,10 @@ enum RefreshGate {
 
 enum TokenResult { case ok(String), needLogin(String), err(String) }
 
-/// 取可用的 accessToken；距到期不足 5 分钟（或 force）时先刷新并写回钥匙串
+/// 取可用的 accessToken；距到期不足 5 分钟（或 force）时先刷新并写回这个账号自己的凭据
 func accessToken(for a: ManagedAccount, force: Bool = false) async -> TokenResult {
     await RefreshGate.run {
-        guard var root = readKeychainJSON(service: a.service), var oauth = root["claudeAiOauth"] as? [String: Any] else {
+        guard var root = readCredential(a.cred), var oauth = root["claudeAiOauth"] as? [String: Any] else {
             return .needLogin(L("还没登录：菜单里点「重新登录」", "Not signed in: choose Sign In Again in the menu"))
         }
         let exp = num(oauth["expiresAt"]) ?? 0
@@ -405,7 +349,7 @@ func accessToken(for a: ManagedAccount, force: Bool = false) async -> TokenResul
             if let sc = j["scope"] as? String, !sc.isEmpty { oauth["scopes"] = sc.split(separator: " ").map(String.init) }
             root["claudeAiOauth"] = oauth
             // 写回失败也先用新令牌（下次会因旧 refresh token 失效而提示重新登录）
-            if !writeKeychainJSON(service: a.service, root) { return .ok(at) }
+            if !writeCredential(a.cred, root) { return .ok(at) }
             return .ok(at)
         } catch {
             return .err(L("刷新令牌失败：\(describe(error))", "Token refresh failed: \(describe(error))"))
@@ -502,7 +446,7 @@ func cacheKey(_ a: ManagedAccount) -> String { identityKey(a) ?? a.dir }
 
 /// 默认凭据（平时 `claude` 用的那份）的 accessToken；不刷新，过期就返回 nil
 func defaultAccessToken() -> String? {
-    guard let obj = readKeychainJSON(service: "Claude Code-credentials"),
+    guard let obj = readCredential(.claudeDefault),
           let oauth = obj["claudeAiOauth"] as? [String: Any],
           let token = oauth["accessToken"] as? String else { return nil }
     if let exp = num(oauth["expiresAt"]), exp / 1000 < Date().timeIntervalSince1970 + 30 { return nil }
@@ -601,7 +545,7 @@ func fetchManagedCore(_ a: ManagedAccount, isDefault: Bool, force: Bool = false)
 
 /// 一个账号都没加时的兜底：只读 Claude Code 默认登录，不刷新（它的令牌归你平时用的 Claude Code 管）
 func fetchClaudeDirect(force: Bool = false) async -> Fetch<ClaudeAccount> {
-    let fake = ManagedAccount(dir: "default", service: "Claude Code-credentials")
+    let fake = ManagedAccount(dir: "default", cred: .claudeDefault)
     var acc = await fetchManaged(fake, isDefault: true, force: force)
     acc.label = "C"
     acc.email = L("Claude Code 默认登录（只读）", "Claude Code default sign-in (read-only)")

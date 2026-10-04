@@ -79,6 +79,7 @@ open "$HOME/Applications/AI UsageMaster.app"
 
 - 令牌只放在 macOS 钥匙串里，只发给对应厂商的 HTTPS 接口。网络会话不写磁盘缓存，不跟随重定向，也不打日志。
 - 写钥匙串时通过 `security -i` 的标准输入传入，令牌不会出现在进程参数里。唯一的例外是超过约 4 KB 的条目（MCP 服务器登录多了以后的 Claude Code 自身凭据）：`security -i` 会截断长行，所以和 Claude Code 自己的做法一样，这一次调用改用参数传值。
+- Windows（移植中）没有钥匙串。在 Windows 上，Claude Code 和 Orca 的登录就是它们自己读写的明文 JSON 文件，AI UsageMaster 原地读写；在 AI UsageMaster 里填的 API Key 用 DPAPI 按当前 Windows 用户加密。所有凭据读写都集中在 `Sources/CredentialStore.swift` 一个文件里。
 - 其他工具的登录文件只读不写。菜单里填的 API Key 存进钥匙串。AI UsageMaster 为 Gemini 刷新的访问令牌只放在内存里。
 - **刷新只针对 UsageMaster 自己的那几份凭据**，所以不会影响你平时用的 Claude Code 的登录状态。
 - 切换账号会改两处：默认钥匙串条目 `Claude Code-credentials` 里的 Claude 登录（`claudeAiOauth`），以及 `~/.claude.json` 里的 `oauthAccount`。条目里的其它内容（比如 MCP 服务器的登录）原样保留。切换前，当前账号的登录（可能已被 Claude Code 刷新过）会先存回它自己的钥匙串条目。所有检查都在写入之前做完，写入时持有 Claude Code 自己写凭据用的同一把锁，任何一步失败都会恢复原样。需要重新登录的账号不能被切过去。
@@ -88,7 +89,7 @@ open "$HOME/Applications/AI UsageMaster.app"
 ## 已知限制
 
 - 这是一个个人项目，和 Anthropic、Cursor 没有任何关系。用到的接口不是公开文档里的接口，厂商随时可能调整。
-- 目前只支持 macOS。Windows 上 Claude Code 的凭据在 `%USERPROFILE%\.claude\.credentials.json`（带 `CLAUDE_CONFIG_DIR` 时在该目录下），Cursor 的在 `%APPDATA%\Cursor\User\globalStorage\state.vscdb`，Windows 版正在移植：界面以外的代码已能用 Swift 6.4 在 Windows 上编译，`--print` 和 `--stats` 能运行；已实测的内容和还要改的地方见 [docs/WINDOWS.md](docs/WINDOWS.md)。
+- 目前只支持 macOS。Windows 上 Claude Code 的凭据在 `%USERPROFILE%\.claude\.credentials.json`（带 `CLAUDE_CONFIG_DIR` 时在该目录下），Cursor 的在 `%APPDATA%\Cursor\User\globalStorage\state.vscdb`，Windows 版正在移植：界面以外的代码已能用 Swift 6.4 在 Windows 上编译，`--print` 和 `--stats` 能运行，凭据存储和账号切换的自检在两个系统上都已通过；已实测的内容和还要改的地方见 [docs/WINDOWS.md](docs/WINDOWS.md)。
 - 自动切换只对通过 UsageMaster 添加的账号生效。
 
 ## 路线图

@@ -113,16 +113,17 @@ if CommandLine.arguments.contains("--selftest") {
         if !ok { fail += 1 }
         print("\(ok ? "✓" : "✗") \(name)")
     }
-    // 切换：全部用临时钥匙串条目和临时文件，不碰真实登录
+    // 切换：全部用临时凭据（macOS 临时钥匙串条目，Windows 临时文件）和临时文件，不碰真实登录
     do {
         let tag = "aium-selftest-" + UUID().uuidString.prefix(8)
         let tmp = NSTemporaryDirectory() + tag
         let fm = FileManager.default
         try? fm.createDirectory(atPath: tmp + "/claude", withIntermediateDirectories: true)
-        let svc = { (n: String) in "\(tag)-\(n)" }
-        let created = ["default", "A", "B", "C", "D", "big"].map(svc)
+        let svc = { (n: String) in CredentialRef(service: "\(tag)-\(n)", file: tmp + "/cred-\(n).json") }
+        let orcaCred = { (id: String) in CredentialRef(service: "\(tag)-orca", account: id, file: tmp + "/orca/\(id)/auth/.credentials.json") }
+        let created = ["default", "A", "B", "C", "D", "big", "sealed"].map(svc) + [orcaCred("orca-id-b"), orcaCred("orca-id-a")]
         defer {
-            for s in created { _ = runCommand("/usr/bin/security", ["delete-generic-password", "-s", s, "-a", keychainAccount()], timeout: 8) }
+            for r in created { deleteCredential(r) }
             try? fm.removeItem(atPath: tmp)
         }
         func oa(_ e: String) -> [String: Any] { ["emailAddress": e, "organizationUuid": "org1", "organizationName": "Test"] }
@@ -134,51 +135,78 @@ if CommandLine.arguments.contains("--selftest") {
         var mcp: [String: Any] = [:]
         for i in 0..<30 { mcp["server\(i)"] = ["accessToken": String(repeating: "x", count: 300), "serverName": "fake\(i)"] }
         var dflt = creds("tok-A-rotated"); dflt["mcpOAuth"] = mcp
-        let A = ManagedAccount(dir: tmp + "/A", service: svc("A"), email: "a@x", org: "Test", orgUuid: "org1", oauthAccount: oa("a@x"))
-        let B = ManagedAccount(dir: tmp + "/B", service: svc("B"), email: "b@x", org: "Test", orgUuid: "org1", oauthAccount: oa("b@x"))
-        let C = ManagedAccount(dir: tmp + "/C", service: svc("C"), email: "c@x", org: "Test", orgUuid: "org1", oauthAccount: nil)
-        let D = ManagedAccount(dir: tmp + "/D", service: svc("D"), email: "d@x", org: "Test", orgUuid: "org1", oauthAccount: oa("d@x"))
-        let targets = SwitchTargets(defaultService: svc("default"), configPath: tmp + "/claude.json", claudeDir: tmp + "/claude", nudge: false)
+        let A = ManagedAccount(dir: tmp + "/A", cred: svc("A"), email: "a@x", org: "Test", orgUuid: "org1", oauthAccount: oa("a@x"))
+        let B = ManagedAccount(dir: tmp + "/B", cred: svc("B"), email: "b@x", org: "Test", orgUuid: "org1", oauthAccount: oa("b@x"))
+        let C = ManagedAccount(dir: tmp + "/C", cred: svc("C"), email: "c@x", org: "Test", orgUuid: "org1", oauthAccount: nil)
+        let D = ManagedAccount(dir: tmp + "/D", cred: svc("D"), email: "d@x", org: "Test", orgUuid: "org1", oauthAccount: oa("d@x"))
+        let targets = SwitchTargets(defaultCred: svc("default"), configPath: tmp + "/claude.json", claudeDir: tmp + "/claude",
+                                    orcaAccountsDir: tmp + "/orca", nudge: false)
         func setup() -> Bool {
             let cfg: [String: Any] = ["oauthAccount": oa("a@x"), "other": "keep"]
             try? JSONSerialization.data(withJSONObject: cfg).write(to: URL(fileURLWithPath: targets.configPath))
-            return writeKeychainJSON(service: svc("default"), dflt) && writeKeychainJSON(service: svc("A"), creds("tok-A-old"))
-                && writeKeychainJSON(service: svc("B"), creds("tok-B")) && writeKeychainJSON(service: svc("C"), creds("tok-C"))
-                && writeKeychainJSON(service: svc("D"), creds("tok-D", rt: nil))
+            return writeCredential(svc("default"), dflt) && writeCredential(svc("A"), creds("tok-A-old"))
+                && writeCredential(svc("B"), creds("tok-B")) && writeCredential(svc("C"), creds("tok-C"))
+                && writeCredential(svc("D"), creds("tok-D", rt: nil))
         }
-        func tok(_ s: String) -> String? { (readKeychainJSON(service: s)?["claudeAiOauth"] as? [String: Any])?["accessToken"] as? String }
+        func tok(_ r: CredentialRef) -> String? { (readCredential(r)?["claudeAiOauth"] as? [String: Any])?["accessToken"] as? String }
         func email() -> String? { (readJSONFile(targets.configPath)?["oauthAccount"] as? [String: Any])?["emailAddress"] as? String }
         var big: [String: Any] = ["blob": String(repeating: "y", count: 9000)]
         big["n"] = 1
         let cases: [(String, () -> Bool)] = [
             (L("超过 4 KB 的条目能完整写入并回读", "Items over 4 KB are written and read back intact"), {
-                writeKeychainJSON(service: svc("big"), big) && NSDictionary(dictionary: readKeychainJSON(service: svc("big")) ?? [:]).isEqual(to: big) }),
+                writeCredential(svc("big"), big) && jsonEqual(readCredential(svc("big")) ?? [:], big) }),
+            (L("凭据能删除，删后读到「没有」而不是「读不出」", "A credential can be deleted and then reads as missing, not unreadable"), {
+                guard writeCredential(svc("big"), big), credentialExists(svc("big")) else { return false }
+                deleteCredential(svc("big"))
+                if case .missing = readCredentialStrict(svc("big")) { return !credentialExists(svc("big")) }
+                return false }),
+            (L("UsageMaster 自己的条目（Windows 上加密）能写入、回读，文件里看不到明文", "UsageMaster's own items (encrypted on Windows) round-trip and the file holds no plain text"), {
+                var r = svc("sealed"); r.encrypted = true
+                let item: [String: Any] = ["apiKey": "sk-selftest-plain", "region": "cn"]
+                guard writeCredential(r, item), jsonEqual(readCredential(r) ?? [:], item) else { return false }
+                #if os(Windows)
+                guard let raw = try? Data(contentsOf: URL(fileURLWithPath: r.file)) else { return false }
+                return raw.range(of: Data("sk-selftest-plain".utf8)) == nil
+                #else
+                return true
+                #endif
+            }),
             (L("切换：默认凭据只换 claudeAiOauth，8 KB 的 MCP 登录原样保留", "Switch: only claudeAiOauth is swapped, 8 KB of MCP sign-ins kept"), {
                 guard setup(), switchDefault(to: B, all: [A, B, C, D], targets: targets) == nil else { return false }
-                let d = readKeychainJSON(service: svc("default")) ?? [:]
-                return tok(svc("default")) == "tok-B" && NSDictionary(dictionary: d["mcpOAuth"] as? [String: Any] ?? [:]).isEqual(to: mcp) }),
+                let d = readCredential(svc("default")) ?? [:]
+                return tok(svc("default")) == "tok-B" && jsonEqual(d["mcpOAuth"] as? [String: Any] ?? [:], mcp) }),
             (L("切换：当前账号只存回 claudeAiOauth（Claude Code 刷新过的那份），不带 MCP", "Switch: current account gets back only its refreshed claudeAiOauth, no MCP"), {
                 guard setup(), switchDefault(to: B, all: [A, B, C, D], targets: targets) == nil else { return false }
-                let a = readKeychainJSON(service: svc("A")) ?? [:]
+                let a = readCredential(svc("A")) ?? [:]
                 return tok(svc("A")) == "tok-A-rotated" && a["mcpOAuth"] == nil && email() == "b@x"
                     && readJSONFile(targets.configPath)?["other"] as? String == "keep" }),
             (L("默认登录是 Orca 放的 → 切换照常，但不把它存进当前账号自己的条目", "Default sign-in placed by Orca → switch works, current account's own item untouched"), {
                 guard setup() else { return false }
+                // macOS 看 ~/.claude/.credentials.json 这份明文副本；Windows 看 Orca 账号目录里的那份
+                #if os(Windows)
+                guard writeCredential(orcaCred("orca-id-a"), dflt) else { return false }
+                defer { deleteCredential(orcaCred("orca-id-a")) }
+                #else
                 let f = targets.claudeDir + "/.credentials.json"
                 try? JSONSerialization.data(withJSONObject: dflt).write(to: URL(fileURLWithPath: f))
                 defer { try? FileManager.default.removeItem(atPath: f) }
+                #endif
                 guard switchDefault(to: B, all: [A, B, C, D], targets: targets) == nil else { return false }
                 return tok(svc("A")) == "tok-A-old" && tok(svc("default")) == "tok-B" && email() == "b@x" }),
+            (L("Orca 有账号但不是它放的默认登录 → 当前账号照常拿回刷新过的那份", "Orca has accounts but did not place the default sign-in → current account gets its refreshed copy back"), {
+                guard setup() else { return false }
+                guard writeCredential(orcaCred("orca-id-a"), creds("tok-orca")) else { return false }
+                defer { deleteCredential(orcaCred("orca-id-a")) }
+                guard switchDefault(to: B, all: [A, B, C, D], targets: targets) == nil else { return false }
+                return tok(svc("A")) == "tok-A-rotated" && tok(svc("default")) == "tok-B" }),
             (L("和 Orca 共用刷新令牌能识别出来，不同的不误报", "A refresh token shared with Orca is detected; a different one is not"), {
-                let orcaSvc = svc("orca")
                 let st = OrcaClaudeState(active: "b@x", ids: ["b@x": "orca-id-b"])
                 let item: [String: Any] = ["claudeAiOauth": ["refreshToken": "rt-shared", "accessToken": "x"]]
-                guard let hex = try? JSONSerialization.data(withJSONObject: item).map({ String(format: "%02x", $0) }).joined(),
-                      runCommand("/usr/bin/security", ["add-generic-password", "-U", "-a", "orca-id-b", "-s", orcaSvc, "-X", hex], timeout: 8) != nil else { return false }
-                defer { _ = runCommand("/usr/bin/security", ["delete-generic-password", "-a", "orca-id-b", "-s", orcaSvc], timeout: 8) }
-                return sharesRefreshTokenWithOrca(email: "B@x", refreshToken: "rt-shared", state: st, orcaService: orcaSvc)
-                    && !sharesRefreshTokenWithOrca(email: "b@x", refreshToken: "rt-other", state: st, orcaService: orcaSvc)
-                    && !sharesRefreshTokenWithOrca(email: "c@x", refreshToken: "rt-shared", state: st, orcaService: orcaSvc) }),
+                guard writeCredential(orcaCred("orca-id-b"), item) else { return false }
+                defer { deleteCredential(orcaCred("orca-id-b")) }
+                return sharesRefreshTokenWithOrca(email: "B@x", refreshToken: "rt-shared", state: st, orcaCred: orcaCred)
+                    && !sharesRefreshTokenWithOrca(email: "b@x", refreshToken: "rt-other", state: st, orcaCred: orcaCred)
+                    && !sharesRefreshTokenWithOrca(email: "c@x", refreshToken: "rt-shared", state: st, orcaCred: orcaCred) }),
             (L("目标账号缺账号信息 → 拒绝，什么都不改", "Target without profile → refused, nothing changed"), {
                 guard setup(), switchDefault(to: C, all: [A, B, C, D], targets: targets) != nil else { return false }
                 return tok(svc("default")) == "tok-A-rotated" && tok(svc("A")) == "tok-A-old" && email() == "a@x" }),
