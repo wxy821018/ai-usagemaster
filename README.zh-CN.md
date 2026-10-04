@@ -70,7 +70,7 @@ open "$HOME/Applications/AI UsageMaster.app"
 ## 已知限制
 
 - 这是一个个人项目，和 Anthropic、Cursor 没有任何关系。用到的接口不是公开文档里的接口，厂商随时可能调整。
-- 目前只支持 macOS。Windows 上 Claude Code 的凭据在 `%USERPROFILE%\.claude\.credentials.json`（带 `CLAUDE_CONFIG_DIR` 时在该目录下），Cursor 的在 `%APPDATA%\Cursor\User\globalStorage\state.vscdb`，欢迎移植。
+- 目前只支持 macOS。Windows 上 Claude Code 的凭据在 `%USERPROFILE%\.claude\.credentials.json`（带 `CLAUDE_CONFIG_DIR` 时在该目录下），Cursor 的在 `%APPDATA%\Cursor\User\globalStorage\state.vscdb`，欢迎移植，已实测的移植要点见 [docs/WINDOWS.md](docs/WINDOWS.md)。
 - 自动切换只对通过 UsageMaster 添加的账号生效。
 
 ## 路线图

@@ -68,7 +68,7 @@ Choose **Add Claude account…** in the menu (the menu text is currently in Chin
 ## Known limitations
 
 - A personal project, not affiliated with Anthropic or Cursor. The endpoints it uses are not publicly documented and may change at any time.
-- macOS only for now. On Windows, Claude Code keeps credentials in `%USERPROFILE%\.claude\.credentials.json` (or in the `CLAUDE_CONFIG_DIR` directory when that is set), and Cursor keeps its database at `%APPDATA%\Cursor\User\globalStorage\state.vscdb`. Ports are welcome.
+- macOS only for now. On Windows, Claude Code keeps credentials in `%USERPROFILE%\.claude\.credentials.json` (or in the `CLAUDE_CONFIG_DIR` directory when that is set), and Cursor keeps its database at `%APPDATA%\Cursor\User\globalStorage\state.vscdb`. Ports are welcome; see [docs/WINDOWS.md](docs/WINDOWS.md) for what has been verified so far.
 - Automatic switching only covers accounts added through AI UsageMaster.
 - The menu is in Chinese for now; an English UI is planned.
 
