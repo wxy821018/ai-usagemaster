@@ -70,14 +70,19 @@ func fetchAll(force: Bool = false) async -> Snapshot {
         switch await fetchClaudeDirect(force: force) {
         case .ok(let a): claude = .ok([a])
         case .err(let m): claude = .err(m)
+        case .notConfigured: claude = .notConfigured
         }
     } else {
         // 各账号并行查
+        // 状态栏快照：用完整账号列表匹配一次，匹配唯一才用（每个账号的每周重置时间不同，靠它认账号）
+        let snap = readStatusLineSnapshot().flatMap { Date().timeIntervalSince($0.ts) < 600 ? $0 : nil }
+        let liveDir = snap.flatMap { matchStatusLineAccount($0, accounts: managed) }?.dir
         let results = await withTaskGroup(of: (Int, ClaudeAccount).self) { g in
             let cur = currentDefaultIdentity().map { $0.email + "|" + $0.orgUuid }
             for (i, a) in managed.enumerated() {
                 let isDef = cur != nil && identityKey(a) == cur
-                g.addTask { (i, await fetchManaged(a, isDefault: isDef, force: force)) }
+                let live = a.dir == liveDir ? snap : nil
+                g.addTask { (i, await fetchManaged(a, isDefault: isDef, force: force, liveSnapshot: live)) }
             }
             var out: [(Int, ClaudeAccount)] = []
             for await r in g { out.append(r) }

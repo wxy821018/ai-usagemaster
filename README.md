@@ -76,10 +76,10 @@ Choose **Add Claude Account…** in the menu. A Terminal window runs the officia
 ## Security and privacy
 
 - Tokens live only in the macOS Keychain and are only sent to the matching vendor over HTTPS. Network sessions keep no disk cache, do not follow redirects, and nothing is logged.
-- Keychain writes go through the standard input of `security -i`, so tokens never appear in process arguments.
+- Keychain writes go through the standard input of `security -i`, so tokens do not appear in process arguments. The one exception is an item larger than about 4 KB (Claude Code's own credentials once many MCP servers are signed in): `security -i` cuts long lines, so, like Claude Code itself, that single call passes the value as an argument.
 - Other tools' sign-in files are only read, never written. API keys entered in the menu go into the Keychain. Gemini access tokens refreshed by AI UsageMaster stay in memory.
 - **Refreshing only touches AI UsageMaster's own copies of the credentials**, so the sign-in of the Claude Code you use day to day is not affected.
-- Switching accounts changes two things: the default Keychain item `Claude Code-credentials` and the `oauthAccount` entry in `~/.claude.json`. Before switching, the current credentials (which Claude Code may have refreshed) are saved back to that account's own directory.
+- Switching accounts changes two things: the Claude sign-in (`claudeAiOauth`) inside the default Keychain item `Claude Code-credentials`, and the `oauthAccount` entry in `~/.claude.json`. Everything else in that item, such as MCP server sign-ins, stays as it is. Before switching, the current account's sign-in (which Claude Code may have refreshed) is saved back to that account's own Keychain item. All checks run before anything is written, the change is made while holding the same lock Claude Code uses for its own credential writes, and any failure restores the previous state. An account that needs to sign in again cannot be switched to.
 - Claude Code sometimes leaves a backup copy of its credentials in `~/.claude/.credentials.json`. While that file exists, running sessions only notice a change when the file's modification time changes, so after a switch AI UsageMaster updates that timestamp. It never changes the file's contents and never creates it.
 - If you also use another account switcher (Orca, for example), switch with only one of them. Two tools taking turns on the same default sign-in will invalidate one side's credentials and force a new login.
 

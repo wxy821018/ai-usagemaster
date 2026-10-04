@@ -64,6 +64,12 @@ func saveServiceAPIKey(service: String, apiKey: String, region: String?) -> Bool
     return writeKeychainJSON(service: name, obj)
 }
 
+/// 菜单用：UsageMaster 自己的条目里有没有存 key（只查属性，不取机密）
+func hasServiceAPIKey(_ service: String) -> Bool { apiKeyItemExists(service) }
+
+/// 菜单用：已存的区域（MiniMax 弹窗预选），没有返回 nil
+func storedServiceRegion(_ service: String) -> String? { readAPIKeyItem(service)?.item["region"] as? String }
+
 /// 菜单「删除 API key」调用：只删 UsageMaster 自己的条目，不碰 OpenCode 等别家软件的凭据
 func deleteServiceAPIKey(service: String) {
     guard let name = apiKeyKeychainName(service) else { return }
@@ -521,6 +527,8 @@ struct MiniMaxService: UsageService {
                     if r.model != "general" { acc.notes.append(L("额度项：\(r.model)", "Quota item: \(r.model)")) }
                 case .err(let m):
                     acc.error = redactServerText(m, secret: found.apiKey)
+                case .notConfigured:
+                    break
                 }
             }
         } catch {

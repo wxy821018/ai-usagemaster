@@ -23,7 +23,11 @@ func decideAutoSwitch(_ accounts: [ClaudeAccount], now: Date, pinnedDir: String?
     func sess(_ a: ClaudeAccount) -> Double { sessionWindow(a).map { effective($0, now).pct } ?? 0 }
     func week(_ a: ClaudeAccount) -> Double { weeklyWindow(a).map { effective($0, now).pct } ?? 0 }
     func usable(_ a: ClaudeAccount) -> Bool { a.error == nil && !a.windows.isEmpty && sess(a) < 99 && week(a) < 99 }
-    func weeklyReset(_ a: ClaudeAccount) -> Date { weeklyWindow(a)?.resetsAt ?? now.addingTimeInterval(7 * 86400) }
+    // 重置时间已过而数据还没刷新：按"刚重置"算（还有一整周），不要夹成 1 小时把它夸大成最该先用
+    func weeklyReset(_ a: ClaudeAccount) -> Date {
+        guard let r = weeklyWindow(a)?.resetsAt, r > now else { return now.addingTimeInterval(7 * 86400) }
+        return r
+    }
     func hoursLeft(_ d: Date) -> Double { max(d.timeIntervalSince(now) / 3600, 1) }
     func urgency(_ a: ClaudeAccount) -> Double {
         let base = (100 - week(a)) / hoursLeft(weeklyReset(a))
@@ -32,6 +36,9 @@ func decideAutoSwitch(_ accounts: [ClaudeAccount], now: Date, pinnedDir: String?
     func fmtU(_ x: Double) -> String { String(format: "%.1f", x) }
 
     guard let cur = accounts.first(where: { $0.active }) else { return AutoSwitchDecision(target: nil, reason: L("没有在用的托管账号", "No managed account is active")) }
+    if cur.windows.isEmpty {
+        return AutoSwitchDecision(target: nil, reason: L("\(cur.label) 还没有数据，不切换", "No data for \(cur.label) yet, not switching"))
+    }
     if let e = cur.error {
         return AutoSwitchDecision(target: nil, reason: L("\(cur.label) 的数据暂时取不到（\(e)），不切换", "No data for \(cur.label) right now (\(e)), not switching"))
     }
@@ -67,7 +74,7 @@ func detectEarlyResets(previous: [String: WindowSeen], accounts: [ClaudeAccount]
     var events: [String] = []
     for a in accounts where a.error == nil {
         for w in a.windows where isSessionWindow(w) || isWeeklyAllWindow(w) {
-            let key = a.email + "|" + (isSessionWindow(w) ? "session" : "weekly_all")
+            let key = a.ident + "|" + (isSessionWindow(w) ? "session" : "weekly_all")
             let pct = effective(w, now).pct
             if let old = previous[key], let oldReset = old.resetsAt,
                old.pct - pct >= 15, now < oldReset.addingTimeInterval(-600) {

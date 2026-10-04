@@ -48,6 +48,9 @@ struct ClaudeAccount {
     var warning: String? = nil       // 暂时性问题（被限流、网络断）：数字来自上次成功的缓存，仍可用
     var notes: [String] = []         // 额外信息：超额用量、可用重置次数等（只读展示）
     var plan: String? = nil          // 套餐：Max 20x / Max 5x / Team / Pro
+    var key: String = ""             // 身份：邮箱|组织 uuid（同一邮箱可在多个组织）
+    /// 按账号存的状态、去重 key 一律用它，不要只用邮箱
+    var ident: String { key.isEmpty ? email : key }
 
     /// 最紧的那个窗口（用来在菜单栏上显示）
     var binding: UsageWindow? { windows.max(by: { $0.percent < $1.percent }) }
@@ -66,6 +69,7 @@ struct CursorUsage {
 enum Fetch<T> {
     case ok(T)
     case err(String)
+    case notConfigured          // 本机没装 / 没登录：不显示、不算错误、不重试
 }
 
 /// 不落盘的网络会话：URLSession.shared 默认会把请求（含 Authorization 头）写进 ~/Library/Caches 的 Cache.db，绝不能用

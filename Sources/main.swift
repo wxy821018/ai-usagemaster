@@ -94,6 +94,14 @@ if CommandLine.arguments.contains("--selftest") {
         (L("B 每周 10 小时后重置还剩 50% → 快作废提醒", "B resets in 10 h with 50% left → expiring"), {
             let r = evaluateAlerts(accounts: [acc("A", active: true, s: 10, w: 10, wResetH: 100), acc("B", active: false, s: 0, w: 50, wResetH: 10)], cursor: nil, autoMode: true, previousUsable: [:], now: now)
             return types(r).contains(.expiring) }),
+        (L("在用账号一点数据都没有 → 不切（不当成用完）", "Active account has no data at all → stay (not treated as used up)"), {
+            var a = acc("A", active: true, s: 0, w: 0, wResetH: 100); a.windows = []
+            return decideAutoSwitch([a, acc("B", active: false, s: 0, w: 10, wResetH: 24)], now: now).target == nil }),
+        (L("候选的每周重置时间已过、数据还没刷新 → 不因此主动切", "Candidate's weekly reset already passed, data not refreshed → no proactive switch"), {
+            decideAutoSwitch([acc("A", active: true, s: 10, w: 50, wResetH: 144), acc("B", active: false, s: 0, w: 30, wResetH: -2)], now: now).target == nil }),
+        (L("需要重新登录的账号不当切换目标", "An account that needs to sign in is never a switch target"), {
+            var b = acc("B", active: false, s: 0, w: 10, wResetH: 24); b.needsLogin = true; b.error = "sign in again"
+            return decideAutoSwitch([acc("A", active: true, s: 100, w: 50, wResetH: 100), b], now: now).target == nil }),
         (L("同样的数据算两次，去重 key 一样", "Same data twice → same dedupe keys"), {
             let a = [acc("A", active: true, s: 96, w: 80, wResetH: 10)]
             let k1 = evaluateAlerts(accounts: a, cursor: nil, autoMode: true, previousUsable: [:], now: now).alerts.map { $0.key }
@@ -104,6 +112,68 @@ if CommandLine.arguments.contains("--selftest") {
         let ok = check()
         if !ok { fail += 1 }
         print("\(ok ? "✓" : "✗") \(name)")
+    }
+    // 切换：全部用临时钥匙串条目和临时文件，不碰真实登录
+    do {
+        let tag = "aium-selftest-" + UUID().uuidString.prefix(8)
+        let tmp = NSTemporaryDirectory() + tag
+        let fm = FileManager.default
+        try? fm.createDirectory(atPath: tmp + "/claude", withIntermediateDirectories: true)
+        let svc = { (n: String) in "\(tag)-\(n)" }
+        let created = ["default", "A", "B", "C", "D", "big"].map(svc)
+        defer {
+            for s in created { _ = runCommand("/usr/bin/security", ["delete-generic-password", "-s", s, "-a", keychainAccount()], timeout: 8) }
+            try? fm.removeItem(atPath: tmp)
+        }
+        func oa(_ e: String) -> [String: Any] { ["emailAddress": e, "organizationUuid": "org1", "organizationName": "Test"] }
+        func creds(_ tok: String, rt: String? = "rt-\(UUID().uuidString)") -> [String: Any] {
+            var c: [String: Any] = ["accessToken": tok, "expiresAt": 9_999_999_999_000.0, "scopes": ["user:inference"]]
+            if let rt = rt { c["refreshToken"] = rt }
+            return ["claudeAiOauth": c]
+        }
+        var mcp: [String: Any] = [:]
+        for i in 0..<30 { mcp["server\(i)"] = ["accessToken": String(repeating: "x", count: 300), "serverName": "fake\(i)"] }
+        var dflt = creds("tok-A-rotated"); dflt["mcpOAuth"] = mcp
+        let A = ManagedAccount(dir: tmp + "/A", service: svc("A"), email: "a@x", org: "Test", orgUuid: "org1", oauthAccount: oa("a@x"))
+        let B = ManagedAccount(dir: tmp + "/B", service: svc("B"), email: "b@x", org: "Test", orgUuid: "org1", oauthAccount: oa("b@x"))
+        let C = ManagedAccount(dir: tmp + "/C", service: svc("C"), email: "c@x", org: "Test", orgUuid: "org1", oauthAccount: nil)
+        let D = ManagedAccount(dir: tmp + "/D", service: svc("D"), email: "d@x", org: "Test", orgUuid: "org1", oauthAccount: oa("d@x"))
+        let targets = SwitchTargets(defaultService: svc("default"), configPath: tmp + "/claude.json", claudeDir: tmp + "/claude", nudge: false)
+        func setup() -> Bool {
+            let cfg: [String: Any] = ["oauthAccount": oa("a@x"), "other": "keep"]
+            try? JSONSerialization.data(withJSONObject: cfg).write(to: URL(fileURLWithPath: targets.configPath))
+            return writeKeychainJSON(service: svc("default"), dflt) && writeKeychainJSON(service: svc("A"), creds("tok-A-old"))
+                && writeKeychainJSON(service: svc("B"), creds("tok-B")) && writeKeychainJSON(service: svc("C"), creds("tok-C"))
+                && writeKeychainJSON(service: svc("D"), creds("tok-D", rt: nil))
+        }
+        func tok(_ s: String) -> String? { (readKeychainJSON(service: s)?["claudeAiOauth"] as? [String: Any])?["accessToken"] as? String }
+        func email() -> String? { (readJSONFile(targets.configPath)?["oauthAccount"] as? [String: Any])?["emailAddress"] as? String }
+        var big: [String: Any] = ["blob": String(repeating: "y", count: 9000)]
+        big["n"] = 1
+        let cases: [(String, () -> Bool)] = [
+            (L("超过 4 KB 的条目能完整写入并回读", "Items over 4 KB are written and read back intact"), {
+                writeKeychainJSON(service: svc("big"), big) && NSDictionary(dictionary: readKeychainJSON(service: svc("big")) ?? [:]).isEqual(to: big) }),
+            (L("切换：默认凭据只换 claudeAiOauth，8 KB 的 MCP 登录原样保留", "Switch: only claudeAiOauth is swapped, 8 KB of MCP sign-ins kept"), {
+                guard setup(), switchDefault(to: B, all: [A, B, C, D], targets: targets) == nil else { return false }
+                let d = readKeychainJSON(service: svc("default")) ?? [:]
+                return tok(svc("default")) == "tok-B" && NSDictionary(dictionary: d["mcpOAuth"] as? [String: Any] ?? [:]).isEqual(to: mcp) }),
+            (L("切换：当前账号只存回 claudeAiOauth（Claude Code 刷新过的那份），不带 MCP", "Switch: current account gets back only its refreshed claudeAiOauth, no MCP"), {
+                guard setup(), switchDefault(to: B, all: [A, B, C, D], targets: targets) == nil else { return false }
+                let a = readKeychainJSON(service: svc("A")) ?? [:]
+                return tok(svc("A")) == "tok-A-rotated" && a["mcpOAuth"] == nil && email() == "b@x"
+                    && readJSONFile(targets.configPath)?["other"] as? String == "keep" }),
+            (L("目标账号缺账号信息 → 拒绝，什么都不改", "Target without profile → refused, nothing changed"), {
+                guard setup(), switchDefault(to: C, all: [A, B, C, D], targets: targets) != nil else { return false }
+                return tok(svc("default")) == "tok-A-rotated" && tok(svc("A")) == "tok-A-old" && email() == "a@x" }),
+            (L("目标账号没有刷新令牌 → 拒绝，什么都不改", "Target without refresh token → refused, nothing changed"), {
+                guard setup(), switchDefault(to: D, all: [A, B, C, D], targets: targets) != nil else { return false }
+                return tok(svc("default")) == "tok-A-rotated" && tok(svc("A")) == "tok-A-old" && email() == "a@x" }),
+        ]
+        for (name, check) in cases {
+            let ok = check()
+            if !ok { fail += 1 }
+            print("\(ok ? "✓" : "✗") \(name)")
+        }
     }
     // 各模块自带的自检：多数返回失败清单；TokenStats 返回全部结果（以 ✓ / ✗ 开头）
     let modules: [(String, () -> [String])] = [
@@ -168,6 +238,7 @@ if CommandLine.arguments.contains("--print") {
                 }
             }
         case .err(let m): print("Claude ⚠︎ \(m)")
+        case .notConfigured: print(L("Claude：没有登录", "Claude: not signed in"))
         }
         if case .ok(let accounts) = s.claude {
             for a in accounts where !a.extraKeys.isEmpty { print(L("  \(a.label) 额外额度项：", "  \(a.label) extra quota items: ") + a.extraKeys.joined(separator: listSep)) }
@@ -184,6 +255,7 @@ if CommandLine.arguments.contains("--print") {
             print(L("  本期包含额度 \(money)\(bar(u.percent)) \(Int(u.percent.rounded()))%  \(when) 重置（还有 \(countdown(u.cycleEnd, now: now))）", "  Included this cycle \(money)\(bar(u.percent)) \(Int(u.percent.rounded()))%  resets \(when) (in \(countdown(u.cycleEnd, now: now)))"))
             if let p = u.pooled { print("  \(p)") }
         case .err(let m): print("Cursor ⚠︎ \(m)")
+        case .notConfigured: break
         }
         for st in s.services {
             for a in st.accounts {

@@ -67,7 +67,7 @@ func evaluateAlerts(accounts: [ClaudeAccount], cursor: CursorUsage?, autoMode: B
     var out: [AlertItem] = []
     var usable: [String: Bool] = [:]
     let withData = accounts.filter { $0.error == nil && !$0.windows.isEmpty }
-    for a in withData { usable[a.email] = accountUsable(a, now) }
+    for a in withData { usable[a.ident] = accountUsable(a, now) }
 
     func pcts(_ a: ClaudeAccount) -> String {
         let s = Int(sessionWindow(a).map { effective($0, now).pct } ?? 0)
@@ -83,20 +83,20 @@ func evaluateAlerts(accounts: [ClaudeAccount], cursor: CursorUsage?, autoMode: B
             let kind = isSessionWindow(w) ? "session" : "weekly_all"
             let level = pct >= 95 ? 95 : (pct >= 80 ? 80 : 0)
             if level > 0 && pct < 99 {
-                out.append(AlertItem(type: .threshold, key: "th\(level)|\(cur.email)|\(kind)|\(minuteKey(w.resetsAt))",
+                out.append(AlertItem(type: .threshold, key: "th\(level)|\(cur.ident)|\(kind)|\(minuteKey(w.resetsAt))",
                     title: L("\(cur.label) 的\(w.label)已用 \(Int(pct))%", "\(cur.label): \(w.label) at \(Int(pct))%"),
                     body: L("\(whenText(w.resetsAt, now)) 重置", "Resets \(whenText(w.resetsAt, now))")))
             }
             if let pw = paceWarning(w, now: now) {
-                out.append(AlertItem(type: .pace, key: "pace|\(cur.email)|\(kind)|\(minuteKey(w.resetsAt))",
+                out.append(AlertItem(type: .pace, key: "pace|\(cur.ident)|\(kind)|\(minuteKey(w.resetsAt))",
                     title: L("\(cur.label) 的\(w.label)用得太快", "\(cur.label): \(w.label) is going fast"), body: pw.text))
             }
         }
-        if usable[cur.email] == false && !autoMode {
+        if usable[cur.ident] == false && !autoMode {
             let d = decideAutoSwitch(accounts, now: now, pinnedDir: nil)
             let rec = recoveryTime(cur, now)
             if let dir = d.target, let best = accounts.first(where: { $0.configDir == dir }) {
-                out.append(AlertItem(type: .exhausted, key: "exh|\(cur.email)|\(minuteKey(rec))",
+                out.append(AlertItem(type: .exhausted, key: "exh|\(cur.ident)|\(minuteKey(rec))",
                     title: L("\(cur.label) 用完了", "\(cur.label) is used up"),
                     body: L("\(whenText(rec, now)) 恢复。点这条通知切到 \(best.label)（\(pcts(best))）",
                             "Back \(whenText(rec, now)). Click to switch to \(best.label) (\(pcts(best)))"),
@@ -106,7 +106,7 @@ func evaluateAlerts(accounts: [ClaudeAccount], cursor: CursorUsage?, autoMode: B
     }
 
     // 所有账号都用完
-    if !withData.isEmpty && withData.allSatisfy({ usable[$0.email] == false }) {
+    if !withData.isEmpty && withData.allSatisfy({ usable[$0.ident] == false }) {
         let earliest = withData.compactMap { a in recoveryTime(a, now).map { (a, $0) } }.min { $0.1 < $1.1 }
         out.append(AlertItem(type: .allExhausted, key: "all|\(minuteKey(earliest?.1))",
             title: L("所有 Claude 账号都用完了", "Every Claude account is used up"),
@@ -116,9 +116,9 @@ func evaluateAlerts(accounts: [ClaudeAccount], cursor: CursorUsage?, autoMode: B
 
     for a in withData {
         // 恢复可用
-        if usable[a.email] == true && previousUsable[a.email] == false {
+        if usable[a.ident] == true && previousUsable[a.ident] == false {
             let canSwitch = !a.active && !autoMode && a.configDir != nil
-            out.append(AlertItem(type: .recovered, key: "rec|\(a.email)|\(Int(now.timeIntervalSince1970 / 3600))",
+            out.append(AlertItem(type: .recovered, key: "rec|\(a.ident)|\(Int(now.timeIntervalSince1970 / 3600))",
                 title: L("\(a.label) 可以用了", "\(a.label) is available again"),
                 body: pcts(a) + (canSwitch ? L("。点这条通知切换过去", ". Click to switch to it") : ""),
                 switchDir: canSwitch ? a.configDir : nil))
@@ -127,8 +127,8 @@ func evaluateAlerts(accounts: [ClaudeAccount], cursor: CursorUsage?, autoMode: B
         if let w = weeklyWindow(a), let r = w.resetsAt, r > now, r.timeIntervalSince(now) <= 24 * 3600 {
             let left = 100 - Int(effective(w, now).pct)
             if left >= 30 {
-                let canSwitch = !a.active && !autoMode && a.configDir != nil && usable[a.email] == true
-                out.append(AlertItem(type: .expiring, key: "exp|\(a.email)|\(minuteKey(r))",
+                let canSwitch = !a.active && !autoMode && a.configDir != nil && usable[a.ident] == true
+                out.append(AlertItem(type: .expiring, key: "exp|\(a.ident)|\(minuteKey(r))",
                     title: L("\(a.label) 的每周额度还剩 \(left)%，快作废了", "\(a.label) still has \(left)% of its week left"),
                     body: L("\(whenText(r, now)) 重置，没用完的就没了", "It resets \(whenText(r, now)) and unused quota is lost")
                         + (canSwitch ? L("。点这条通知切过去先用它", ". Click to switch and use it first") : ""),
@@ -139,7 +139,7 @@ func evaluateAlerts(accounts: [ClaudeAccount], cursor: CursorUsage?, autoMode: B
 
     // 需要重新登录
     for a in accounts where a.needsLogin {
-        out.append(AlertItem(type: .relogin, key: "relogin|\(a.email)",
+        out.append(AlertItem(type: .relogin, key: "relogin|\(a.ident)",
             title: L("\(a.label) 需要重新登录", "\(a.label) needs to sign in again"),
             body: a.error ?? L("在菜单里点「重新登录」", "Choose Sign In Again in the menu")))
     }
@@ -188,7 +188,7 @@ final class AlertCenter: NSObject, UNUserNotificationCenterDelegate {
                                               previousUsable: previousUsable, now: now)
         previousUsable.merge(usable) { $1 }
         var f = fired.filter { now.timeIntervalSince1970 - $0.value < 10 * 86400 }
-        for a in accounts where !a.needsLogin { f.removeValue(forKey: "relogin|\(a.email)") }   // 登录好了，下次失效还会再提醒
+        for a in accounts where !a.needsLogin { f.removeValue(forKey: "relogin|\(a.ident)") }   // 登录好了，下次失效还会再提醒
         for a in alerts where f[a.key] == nil {
             f[a.key] = now.timeIntervalSince1970          // 关掉的类型也记一笔：之后再打开不会补发一堆旧提醒
             if a.type.enabled { deliver(a) }

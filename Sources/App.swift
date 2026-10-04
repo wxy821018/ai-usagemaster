@@ -33,6 +33,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var services: [ServiceStatus] = []
     var tokenStats: TokenStatsSummary?
     var tokenStatsRunning = false
+    var switching = false
+    var cursorConfigured = true
     var fetching = false
     var switchNote: String?
     var lastAutoSwitch: Date = .distantPast
@@ -61,6 +63,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func applicationDidFinishLaunching(_ n: Notification) {
         migrateLegacyAccounts()
+        installEditMenu()
         AlertCenter.shared.setup()
         AlertCenter.shared.onSwitch = { [weak self] dir in self?.performSwitch(dir: dir) }
         item.autosaveName = "UsageMaster"
@@ -96,11 +99,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             switch s.claude {
             case .ok(let a): self.claude = a; self.claudeOKAt = s.at; self.claudeErr = nil
             case .err(let m): self.claudeErr = m
+            case .notConfigured: self.claude = nil; self.claudeErr = L("没有登录 Claude Code", "Claude Code is not signed in")
             }
             switch s.cursor {
             case .ok(let u): self.cursor = u; self.cursorOKAt = s.at; self.cursorErr = nil
             case .err(let m): self.cursorErr = m
+            case .notConfigured: self.cursor = nil; self.cursorErr = nil; self.cursorConfigured = false
             }
+            if case .ok = s.cursor { self.cursorConfigured = true }
             self.services = s.services
             self.fetching = false
             recordHistory(s)
@@ -167,12 +173,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 } else { add("—") }
             }
         } else if claudeErr != nil { add("Claude ⚠︎", .systemOrange) } else { add("Claude …") }
-        add("  │  ")
-        let cursorStale = cursorOKAt.map { now.timeIntervalSince($0) > staleAfter } ?? true
-        if let u = cursor {
-            add("Cu ", cursorStale ? .secondaryLabelColor : .labelColor)
-            add("\(Int(u.percent.rounded()))%", cursorStale ? .secondaryLabelColor : color(u.percent))
-        } else if cursorErr != nil { add("Cu ⚠︎", .systemOrange) } else { add("Cu …") }
+        if cursorConfigured {
+            add("  │  ")
+            let cursorStale = cursorOKAt.map { now.timeIntervalSince($0) > staleAfter } ?? true
+            if let u = cursor {
+                add("Cu ", cursorStale ? .secondaryLabelColor : .labelColor)
+                add("\(Int(u.percent.rounded()))%", cursorStale ? .secondaryLabelColor : color(u.percent))
+            } else if cursorErr != nil { add("Cu ⚠︎", .systemOrange) } else { add("Cu …") }
+        }
         // 其它已配置的服务：只显示最紧的那个窗口
         for s in services {
             let ws = s.accounts.filter { $0.error == nil }.flatMap { $0.windows }.filter { $0.percent != nil }
@@ -223,11 +231,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             for (i, a) in accounts.enumerated() {
                 if i > 0 || claudeErr != nil { menu.addItem(.separator()) }
                 let hi = NSMenuItem(title: "", action: a.active ? nil : #selector(switchTo(_:)), keyEquivalent: "")
-                let ht = a.active ? "● Claude · \(a.label)  \(a.email)   " + L("使用中", "in use") : "○ Claude · \(a.label)  \(a.email)   " + L("点此切换", "click to switch")
+                let ht = a.active ? "● Claude · \(a.label)  \(a.email)   " + L("使用中", "in use")
+                    : "○ Claude · \(a.label)  \(a.email)   " + (a.needsLogin ? L("需要重新登录", "needs sign-in") : L("点此切换", "click to switch"))
                 hi.attributedTitle = NSAttributedString(string: ht, attributes: [.font: NSFont.boldSystemFont(ofSize: 13)])
                 hi.target = self
                 hi.representedObject = a.configDir
-                hi.isEnabled = !a.active && a.configDir != nil
+                hi.isEnabled = !a.active && a.configDir != nil && !a.needsLogin && !switching
                 menu.addItem(hi)
                 if !a.org.isEmpty || a.plan != nil { line("  " + [a.org, a.plan ?? ""].filter { !$0.isEmpty }.joined(separator: " · "), small: true) }
                 for n in a.notes { line("  \(n)", small: true) }
@@ -256,6 +265,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             line(L("  读取中…", "  Loading…"))
         }
 
+        if cursorConfigured {
         menu.addItem(.separator())
         header("Cursor\(cursor?.plan.map { " · \($0)" } ?? "")")
         if let e = cursorErr {
@@ -272,6 +282,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             if u.source != "direct" { line(L("  数据：", "  Data: ") + u.source, small: true) }
         } else if cursorErr == nil {
             line(L("  读取中…", "  Loading…"))
+        }
         }
 
         // 其它 AI 服务
@@ -295,6 +306,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     } else if !tail.isEmpty { line("    \(tail)", small: true) }
                 }
                 if let u = a.updatedAt { line(L("  数据：", "  Data: ") + ago(u, now: now), small: true) }
+            }
+            if apiKeyServices.contains(s.id) && hasServiceAPIKey(s.id) {
+                let k = NSMenuItem(title: L("  更换 API Key…", "  Replace API Key…"), action: #selector(enterAPIKey(_:)), keyEquivalent: "")
+                k.target = self; k.representedObject = s.id
+                menu.addItem(k)
+                let d = NSMenuItem(title: L("  删除 API Key…", "  Remove API Key…"), action: #selector(removeAPIKey(_:)), keyEquivalent: "")
+                d.target = self; d.representedObject = s.id
+                menu.addItem(d)
             }
         }
         let unconfigured = registeredServices.filter { !$0.isConfigured() }
@@ -389,7 +408,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         alertsItem.submenu = sub
         menu.addItem(alertsItem)
         menu.addItem(withTitle: L("打开 Claude 用量页", "Open Claude Usage Page"), action: #selector(openClaude), keyEquivalent: "").target = self
-        menu.addItem(withTitle: L("打开 Cursor 用量页", "Open Cursor Usage Page"), action: #selector(openCursor), keyEquivalent: "").target = self
+        if cursorConfigured {
+            menu.addItem(withTitle: L("打开 Cursor 用量页", "Open Cursor Usage Page"), action: #selector(openCursor), keyEquivalent: "").target = self
+        }
         menu.addItem(.separator())
         menu.addItem(withTitle: L("退出", "Quit"), action: #selector(quit), keyEquivalent: "q").target = self
     }
@@ -411,6 +432,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func applicationWillTerminate(_ n: Notification) { flushTokenStatsCache() }
+
+    /// 菜单栏程序默认没有"编辑"菜单，弹窗里的 ⌘V / ⌘C / ⌘A 就不起作用：补一个不显示的编辑菜单
+    func installEditMenu() {
+        let main = NSMenu()
+        let editItem = NSMenuItem()
+        let edit = NSMenu(title: "Edit")
+        edit.addItem(withTitle: "Undo", action: Selector(("undo:")), keyEquivalent: "z")
+        edit.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+        edit.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        edit.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        edit.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        editItem.submenu = edit
+        main.addItem(editItem)
+        NSApp.mainMenu = main
+    }
 
     @objc func openCostReport() {
         guard let s = tokenStats else { return }
@@ -450,7 +486,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // 用量返回里第一次出现新的额度项（官方活动 / 临时额度 / 重置额度的信号）
         for a in accounts where a.error == nil {
             let now = Set(a.extraKeys)
-            if let before = lastExtraKeys[a.email] {
+            if let before = lastExtraKeys[a.ident] {
                 let added = now.subtracting(before)
                 if !added.isEmpty {
                     let items = added.sorted().joined(separator: listSep)
@@ -459,7 +495,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     switchNote = msg
                 }
             }
-            lastExtraKeys[a.email] = now
+            lastExtraKeys[a.ident] = now
         }
         guard autoSwitch, !events.isEmpty || Date().timeIntervalSince(lastAutoSwitch) > 15 * 60 else { return }
         let d = decideAutoSwitch(accounts, now: Date(), pinnedDir: pinnedDir)
@@ -468,12 +504,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let all = listManagedAccounts()
         guard let x = all.first(where: { $0.dir == dir }) else { return }
         lastAutoSwitch = Date()
-        if let err = switchDefault(to: x, all: all) {
-            switchNote = L("自动切换失败：\(err)", "Automatic switch failed: \(err)")
-        } else {
-            switchNote = L("自动切换：\(d.reason)（\(clockFmt.string(from: Date()))）", "Automatic switch: \(d.reason) (\(clockFmt.string(from: Date())))")
-            AlertCenter.shared.post(.switched, L("已自动切换 Claude 账号", "Switched Claude accounts automatically"), d.reason)
-            refresh()
+        guard !switching else { return }
+        switching = true
+        Task {
+            let err = await switchDefaultSafely(to: x, all: all)
+            self.switching = false
+            if let err = err {
+                self.switchNote = L("自动切换失败：\(err)", "Automatic switch failed: \(err)")
+            } else {
+                self.switchNote = L("自动切换：\(d.reason)（\(clockFmt.string(from: Date()))）", "Automatic switch: \(d.reason) (\(clockFmt.string(from: Date())))")
+                AlertCenter.shared.post(.switched, L("已自动切换 Claude 账号", "Switched Claude accounts automatically"), d.reason)
+                self.refresh()
+            }
         }
     }
 
@@ -490,22 +532,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// 手动切换（菜单里点账号、或点了建议切换的通知）
     func performSwitch(dir: String) {
         let all = listManagedAccounts()
-        guard let x = all.first(where: { $0.dir == dir }) else { return }
-        if let err = switchDefault(to: x, all: all) {
-            switchNote = L("切换失败：\(err)", "Switch failed: \(err)")
-        } else {
-            if autoSwitch { pinnedDir = x.dir }
-            let who = x.email ?? ""
-            switchNote = L("已切换到 \(who)：新开的 claude 会话直接用它，已经开着的会话下一次请求时跟着换（最多约 30 秒）",
-                           "Switched to \(who). New claude sessions use it, and open sessions follow on their next request (within about 30 seconds)")
-                + (autoSwitch ? L("。自动模式：它用完前不会被自动换走", ". Automatic mode: it stays until it runs out") : "")
+        guard let x = all.first(where: { $0.dir == dir }), !switching else { return }
+        if let a = claude?.first(where: { $0.configDir == dir }), a.needsLogin {
+            switchNote = L("\(a.label) 需要重新登录，先在菜单里重新登录它再切换", "\(a.label) needs to sign in again; do that from the menu first")
+            return
         }
-        refresh()
+        switching = true
+        switchNote = L("切换中…", "Switching…")
+        Task {
+            let err = await switchDefaultSafely(to: x, all: all)
+            self.switching = false
+            if let err = err {
+                self.switchNote = L("切换失败：\(err)", "Switch failed: \(err)")
+            } else {
+                if self.autoSwitch { self.pinnedDir = x.dir }
+                let who = x.email ?? ""
+                self.switchNote = L("已切换到 \(who)：新开的 claude 会话直接用它，已经开着的会话下一次请求时跟着换（最多约 30 秒）",
+                                    "Switched to \(who). New claude sessions use it, and open sessions follow on their next request (within about 30 seconds)")
+                    + (self.autoSwitch ? L("。自动模式：它用完前不会被自动换走", ". Automatic mode: it stays until it runs out") : "")
+            }
+            self.refresh()
+        }
     }
     @objc func toggleAlert(_ sender: NSMenuItem) {
         if let raw = sender.representedObject as? String, let type = AlertType(rawValue: raw) { type.enabled.toggle() }
     }
     @objc func testAlert() { AlertCenter.shared.sendTest() }
+
+    @objc func removeAPIKey(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? String,
+              let s = registeredServices.first(where: { $0.id == id }) else { return }
+        let alert = NSAlert()
+        alert.messageText = L("删除 \(s.displayName) 的 API Key？", "Remove the \(s.displayName) API key?")
+        alert.informativeText = L("只删 AI UsageMaster 自己存的那份，不影响 \(s.displayName) 本身。", "Only AI UsageMaster's own copy is removed; \(s.displayName) itself is not affected.")
+        alert.addButton(withTitle: L("删除", "Remove"))
+        alert.addButton(withTitle: L("取消", "Cancel"))
+        NSApp.activate(ignoringOtherApps: true)
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        deleteServiceAPIKey(service: id)
+        switchNote = L("已删除 \(s.displayName) 的 API Key", "Removed the \(s.displayName) API key")
+        refresh(force: true)
+    }
 
     /// 用 API Key 查用量的服务：在弹窗里输入（安全输入框），存进钥匙串
     @objc func enterAPIKey(_ sender: NSMenuItem) {
@@ -523,6 +590,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let pop = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 320, height: 26), pullsDown: false)
             pop.addItems(withTitles: [L("国际版（platform.minimax.io）", "International (platform.minimax.io)"),
                                       L("国内版（platform.minimaxi.com）", "China (platform.minimaxi.com)")])
+            pop.selectItem(at: storedServiceRegion("minimax") == "cn" ? 1 : 0)
             box.addSubview(field)
             box.addSubview(pop)
             regionPopup = pop

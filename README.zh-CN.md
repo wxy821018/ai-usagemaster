@@ -78,10 +78,10 @@ open "$HOME/Applications/AI UsageMaster.app"
 ## 安全和隐私
 
 - 令牌只放在 macOS 钥匙串里，只发给对应厂商的 HTTPS 接口。网络会话不写磁盘缓存，不跟随重定向，也不打日志。
-- 写钥匙串时通过 `security -i` 的标准输入传入，令牌不会出现在进程参数里。
+- 写钥匙串时通过 `security -i` 的标准输入传入，令牌不会出现在进程参数里。唯一的例外是超过约 4 KB 的条目（MCP 服务器登录多了以后的 Claude Code 自身凭据）：`security -i` 会截断长行，所以和 Claude Code 自己的做法一样，这一次调用改用参数传值。
 - 其他工具的登录文件只读不写。菜单里填的 API Key 存进钥匙串。AI UsageMaster 为 Gemini 刷新的访问令牌只放在内存里。
 - **刷新只针对 UsageMaster 自己的那几份凭据**，所以不会影响你平时用的 Claude Code 的登录状态。
-- 切换账号会改两处：默认的钥匙串条目 `Claude Code-credentials`，以及 `~/.claude.json` 里的 `oauthAccount`。切换前，当前账号可能已经被 Claude Code 刷新过的凭据，会先存回它自己的目录。
+- 切换账号会改两处：默认钥匙串条目 `Claude Code-credentials` 里的 Claude 登录（`claudeAiOauth`），以及 `~/.claude.json` 里的 `oauthAccount`。条目里的其它内容（比如 MCP 服务器的登录）原样保留。切换前，当前账号的登录（可能已被 Claude Code 刷新过）会先存回它自己的钥匙串条目。所有检查都在写入之前做完，写入时持有 Claude Code 自己写凭据用的同一把锁，任何一步失败都会恢复原样。需要重新登录的账号不能被切过去。
 - Claude Code 有时会在 `~/.claude/.credentials.json` 留一份凭据备份。这个文件在的时候，开着的会话只看它的修改时间来判断凭据变没变，所以切换后 AI UsageMaster 会更新一下它的修改时间。不改文件内容，文件不存在时也不会新建。
 - 如果你还在用别的账号切换工具（比如 Orca），请只用其中一个来切换。两个工具交替改同一份默认登录，会让其中一方的凭据失效，需要重新登录。
 

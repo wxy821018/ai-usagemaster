@@ -19,6 +19,8 @@ struct CachedAccount: Codable {
     var windows: [CachedWindow] = []
     var extraKeys: [String] = []
     var notes: [String]? = nil
+    var failure: String? = nil       // 上次请求的"硬"失败（需要重新登录等）；成功时清掉。限流轮次不发请求时靠它还原状态
+    var needsLogin: Bool? = nil
     var fetchedAt: Date?             // 上次成功拿到数据的时间
     var attemptedAt: Date?           // 上次发出请求的时间（成功失败都算）
     var retryAfter: Date?            // 被限流时，这个时间之前不再请求
@@ -74,10 +76,22 @@ final class UsageCache: @unchecked Sendable {
                                                kind: $0.kind, severity: $0.severity, isActive: $0.isActive, scope: $0.scope) }
         c.extraKeys = extraKeys
         if let n = notes { c.notes = n }
+        c.failure = nil
+        c.needsLogin = nil
         c.fetchedAt = now
         c.attemptedAt = now
         c.retryAfter = nil
         c.backoff = 0
+        map[key] = c
+        save()
+    }
+
+    /// 记下硬失败（需要重新登录、令牌无效）
+    func storeFailure(_ key: String, _ message: String, needsLogin: Bool) {
+        lock.lock(); defer { lock.unlock() }
+        var c = map[key] ?? CachedAccount()
+        c.failure = message
+        c.needsLogin = needsLogin
         map[key] = c
         save()
     }

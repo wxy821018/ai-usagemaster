@@ -31,11 +31,35 @@ func readKeychainJSON(service: String) -> [String: Any]? {
     return obj
 }
 
-/// 经 `security -i` 从标准输入写回（-X 十六进制），令牌不出现在进程参数里——与 Claude Code 自己写钥匙串的方式一致
+/// 读钥匙串并区分"没有这个条目"和"有，但读不出合法 JSON"：后者绝不能当成空的去覆盖
+enum KeychainRead { case missing, unreadable, ok([String: Any]) }
+func readKeychainStrict(service: String) -> KeychainRead {
+    let p = Process()
+    p.executableURL = URL(fileURLWithPath: "/usr/bin/security")
+    p.arguments = ["find-generic-password", "-s", service, "-a", keychainAccount(), "-w"]
+    let out = Pipe()
+    p.standardOutput = out
+    p.standardError = FileHandle.nullDevice
+    do { try p.run() } catch { return .unreadable }
+    let data = out.fileHandleForReading.readDataToEndOfFile()
+    p.waitUntilExit()
+    if p.terminationStatus == 44 { return .missing }                 // errSecItemNotFound
+    guard p.terminationStatus == 0, let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return .unreadable }
+    return .ok(obj)
+}
+
+/// 写钥匙串（-X 十六进制）。一般经 `security -i` 从标准输入写，令牌不出现在进程参数里；
+/// 但 `security -i` 一行最多约 4 KB，更长的会被截断、把半截 JSON 写进条目（默认凭据带着很多 MCP 登录时就会这样），
+/// 所以超过 4000 字符时和 Claude Code 自己一样改用参数形式（参数只在这一瞬间对本机同一用户可见）。写完回读一致才算成功。
 func writeKeychainJSON(service: String, _ obj: [String: Any]) -> Bool {
     guard let data = try? JSONSerialization.data(withJSONObject: obj) else { return false }
     let hex = data.map { String(format: "%02x", $0) }.joined()
     let cmd = "add-generic-password -U -a \"\(keychainAccount())\" -s \"\(service)\" -X \"\(hex)\"\n"
+    if cmd.utf8.count > 4000 {
+        guard runCommand("/usr/bin/security", ["add-generic-password", "-U", "-a", keychainAccount(), "-s", service, "-X", hex], timeout: 8) != nil,
+              let back = readKeychainJSON(service: service) else { return false }
+        return NSDictionary(dictionary: back).isEqual(to: obj)
+    }
     let p = Process()
     p.executableURL = URL(fileURLWithPath: "/usr/bin/security")
     p.arguments = ["-i"]
@@ -109,7 +133,15 @@ func removeManagedAccount(_ a: ManagedAccount) {
     try? FileManager.default.removeItem(atPath: a.dir)
 }
 
-/// 列出已加的账号；同一个账号（邮箱 + 组织）加了多次时，只保留最早那份，其余自动删除
+/// 同一账号的两份凭据里哪份更新：有刷新令牌的优先，其次到期时间更晚的（通常就是刚登录的那份）
+private func credentialRank(_ a: ManagedAccount) -> (Int, Double) {
+    guard let c = readKeychainJSON(service: a.service)?["claudeAiOauth"] as? [String: Any] else { return (0, 0) }
+    let hasRT = ((c["refreshToken"] as? String)?.isEmpty == false) ? 1 : 0
+    return (hasRT, num(c["expiresAt"]) ?? 0)
+}
+
+/// 列出已加的账号；同一个账号（邮箱 + 组织）加了多次时只留一份：留凭据更新的那份（不一定是最早的，
+/// 重新添加往往正是因为旧的那份失效了），其余自动删除
 var removedDuplicates: [String] = []
 func listManagedAccounts() -> [ManagedAccount] {
     let fm = FileManager.default
@@ -129,8 +161,14 @@ func listManagedAccounts() -> [ManagedAccount] {
             a.oauthAccount = oa
         }
         if let key = identityKey(a) {
-            if seen.contains(key) {
-                removeManagedAccount(a)
+            if seen.contains(key), let i = out.firstIndex(where: { identityKey($0) == key }) {
+                let kept = out[i]
+                if credentialRank(a) > credentialRank(kept) {
+                    removeManagedAccount(kept)          // 新加的这份凭据更新：留它，删旧的
+                    out[i] = a
+                } else {
+                    removeManagedAccount(a)
+                }
                 removedDuplicates.append(a.email ?? name)
                 continue
             }
@@ -147,27 +185,107 @@ func listManagedAccounts() -> [ManagedAccount] {
     return out
 }
 
-/// 切换：让平时运行的 `claude` 改用账号 X（与 Orca 的切换同一思路）
-/// 1) 先把默认凭据（可能已被 Claude Code 刷新过）存回当前在用账号的目录，避免轮换后的令牌丢失；
-/// 2) 把 X 的凭据写进默认钥匙串条目；3) 把 ~/.claude.json 的 oauthAccount 换成 X 的。
-/// 在用的那个账号由 Claude Code 自己刷新令牌，UsageMaster 不再去刷新它那份。
-func switchDefault(to x: ManagedAccount, all: [ManagedAccount]) -> String? {
-    if let cur = currentDefaultIdentity(),
-       let curAcc = all.first(where: { identityKey($0) == cur.email + "|" + cur.orgUuid }),
-       let curCreds = readKeychainJSON(service: defaultService) {
-        _ = writeKeychainJSON(service: curAcc.service, curCreds)
+/// 和 Claude Code 写凭据用同一把锁：它用 proper-lockfile 锁 <配置目录>/.storage-write，实际是建目录 .storage-write.lock，
+/// 超过 15 秒没更新就算失效。拿不到锁返回 nil
+func withClaudeStorageLock<T>(dir: String, _ body: () -> T) -> T? {
+    let lock = dir + "/.storage-write.lock"
+    let fm = FileManager.default
+    try? fm.createDirectory(atPath: dir, withIntermediateDirectories: true)
+    var got = false
+    for _ in 0..<25 {
+        if (try? fm.createDirectory(atPath: lock, withIntermediateDirectories: false)) != nil { got = true; break }
+        if let m = (try? fm.attributesOfItem(atPath: lock))?[.modificationDate] as? Date, Date().timeIntervalSince(m) > 15 {
+            try? fm.removeItem(atPath: lock); continue
+        }
+        Thread.sleep(forTimeInterval: 0.2)
     }
-    guard let creds = readKeychainJSON(service: x.service) else { return L("这个账号还没登录完成", "This account has not finished signing in") }
-    guard writeKeychainJSON(service: defaultService, creds) else { return L("写入默认凭据失败", "Could not write the default credentials") }
-    guard var cfg = readJSONFile(defaultConfigPath), let oa = x.oauthAccount else { return L("读不到 ~/.claude.json", "Could not read ~/.claude.json") }
-    cfg["oauthAccount"] = oa
-    guard let data = try? JSONSerialization.data(withJSONObject: cfg, options: [.prettyPrinted]) else { return L("写 ~/.claude.json 失败", "Could not write ~/.claude.json") }
-    do {
-        try data.write(to: URL(fileURLWithPath: defaultConfigPath), options: .atomic)
-        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: defaultConfigPath)
-    } catch { return L("写 ~/.claude.json 失败", "Could not write ~/.claude.json") }
-    nudgeRunningSessions()
-    return nil
+    guard got else { return nil }
+    defer { try? fm.removeItem(atPath: lock) }
+    return body()
+}
+
+/// 切换时用到的位置（自检里换成临时的，不碰真实登录）
+struct SwitchTargets {
+    var defaultService = "Claude Code-credentials"
+    var configPath = NSHomeDirectory() + "/.claude.json"
+    var claudeDir = NSHomeDirectory() + "/.claude"
+    var nudge = true
+}
+
+/// 切换：让平时运行的 `claude` 改用账号 X（与 Orca 的切换同一思路）。
+/// 先做完所有只读检查，再在 Claude Code 的写凭据锁里改：
+/// 1) 默认凭据里的 claudeAiOauth（可能已被 Claude Code 刷新过）存回当前在用账号自己的条目；
+/// 2) 默认凭据只换 claudeAiOauth，mcpOAuth 等其它内容原样保留；3) ~/.claude.json 的 oauthAccount 换成 X 的。
+/// 任何一步失败都恢复原样并返回原因。在用账号的令牌由 Claude Code 自己刷新，UsageMaster 不刷新它那份。
+func switchDefault(to x: ManagedAccount, all: [ManagedAccount], targets: SwitchTargets = SwitchTargets()) -> String? {
+    // 只读检查
+    guard case .ok(let xItem) = readKeychainStrict(service: x.service), let xc = xItem["claudeAiOauth"] as? [String: Any],
+          let rt = xc["refreshToken"] as? String, !rt.isEmpty else {
+        return L("这个账号还没登录完成或需要重新登录，没有切换", "This account is not signed in (or needs to sign in again); nothing was switched")
+    }
+    guard let oa = x.oauthAccount else {
+        return L("这个账号的账号信息不全，请重新登录它，没有切换", "This account's profile is incomplete; sign in to it again. Nothing was switched")
+    }
+    guard readJSONFile(targets.configPath) != nil else {
+        return L("读不到 ~/.claude.json，没有切换", "Could not read ~/.claude.json; nothing was switched")
+    }
+    let result: String?? = withClaudeStorageLock(dir: targets.claudeDir) { () -> String? in
+        let d: [String: Any]
+        switch readKeychainStrict(service: targets.defaultService) {
+        case .missing: d = [:]
+        case .unreadable: return L("读不出默认凭据，没有切换", "Could not read the default credentials; nothing was switched")
+        case .ok(let o): d = o
+        }
+        // 1) 当前账号：只存回 claudeAiOauth
+        var restoreCur: (service: String, item: KeychainRead)?
+        if let oaCur = readJSONFile(targets.configPath)?["oauthAccount"] as? [String: Any],
+           let email = (oaCur["emailAddress"] as? String)?.lowercased(),
+           let cur = all.first(where: { identityKey($0) == email + "|" + ((oaCur["organizationUuid"] as? String) ?? "") }),
+           cur.dir != x.dir, let dc = d["claudeAiOauth"] as? [String: Any] {
+            let before = readKeychainStrict(service: cur.service)
+            if case .unreadable = before { return L("读不出当前账号自己的凭据，没有切换", "Could not read the current account's own credentials; nothing was switched") }
+            var m: [String: Any] = [:]
+            if case .ok(let o) = before { m = o }
+            m["claudeAiOauth"] = dc
+            guard writeKeychainJSON(service: cur.service, m) else {
+                if case .ok(let o) = before { _ = writeKeychainJSON(service: cur.service, o) }
+                return L("保存当前账号的凭据失败，没有切换", "Could not save the current account's credentials; nothing was switched")
+            }
+            restoreCur = (cur.service, before)
+        }
+        func undo() {
+            if !d.isEmpty { _ = writeKeychainJSON(service: targets.defaultService, d) }
+            if let r = restoreCur, case .ok(let o) = r.item { _ = writeKeychainJSON(service: r.service, o) }
+        }
+        // 2) 默认凭据：只换 claudeAiOauth
+        var nd = d
+        nd["claudeAiOauth"] = xc
+        guard writeKeychainJSON(service: targets.defaultService, nd) else {
+            undo()
+            return L("写入默认凭据失败，已恢复原样", "Could not write the default credentials; everything was restored")
+        }
+        // 3) ~/.claude.json：写之前重读一次，尽量不覆盖 Claude Code 刚写的内容
+        let failed = L("写 ~/.claude.json 失败，已恢复原来的登录", "Could not write ~/.claude.json; the previous sign-in was restored")
+        guard var cfg = readJSONFile(targets.configPath) else { undo(); return failed }
+        cfg["oauthAccount"] = oa
+        guard let data = try? JSONSerialization.data(withJSONObject: cfg, options: [.prettyPrinted]),
+              (try? data.write(to: URL(fileURLWithPath: targets.configPath), options: .atomic)) != nil else { undo(); return failed }
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: targets.configPath)
+        return nil
+    }
+    guard let r = result else {
+        return L("Claude Code 正在写登录信息，稍后再试", "Claude Code is writing its sign-in data; try again in a moment")
+    }
+    if r == nil && targets.nudge { nudgeRunningSessions() }
+    return r
+}
+
+/// 异步版：先让目标账号的令牌可用（快到期就刷新），再在刷新锁里切换，不和本程序自己的令牌刷新交叠
+func switchDefaultSafely(to x: ManagedAccount, all: [ManagedAccount]) async -> String? {
+    if case .needLogin(let m) = await accessToken(for: x) { return m }
+    return await RefreshGate.run {
+        await Task.detached { switchDefault(to: x, all: all) }.value
+    }
 }
 
 /// 让已经开着的 Claude Code 会话尽快换到新账号。
@@ -340,12 +458,30 @@ func defaultAccessToken() -> String? {
     return token
 }
 
+/// 查一个托管账号，再叠上 Claude Code 状态栏刚给的实时数字（只有 5 小时与每周两项，且必须比查到的数据新）。
+/// liveSnapshot 由 fetchAll 用完整账号列表匹配后传进来，只有匹配唯一的那个账号会拿到
+func fetchManaged(_ a: ManagedAccount, isDefault: Bool, force: Bool = false, liveSnapshot: StatusLineSnapshot? = nil) async -> ClaudeAccount {
+    var acc = await fetchManagedCore(a, isDefault: isDefault, force: force)
+    if let s = liveSnapshot, !acc.needsLogin, s.ts > (acc.updatedAt ?? .distantPast) {
+        let live = windowsFromStatusLine(s)
+        if !live.isEmpty {
+            acc.windows = live + acc.windows.filter { !isSessionWindow($0) && !isWeeklyAllWindow($0) }
+            acc.updatedAt = s.ts
+            acc.source = "statusline"
+            acc.warning = nil
+            acc.error = nil
+        }
+    }
+    return acc
+}
+
 /// 查一个托管账号：先看缓存节奏与限流退避，必要时才发请求；失败时保留上次的数字并标注原因
-func fetchManaged(_ a: ManagedAccount, isDefault: Bool, force: Bool = false) async -> ClaudeAccount {
+func fetchManagedCore(_ a: ManagedAccount, isDefault: Bool, force: Bool = false) async -> ClaudeAccount {
     let email = a.email ?? (a.dir as NSString).lastPathComponent
     var acc = ClaudeAccount(label: accountLabel(dir: a.dir, email: email), email: email, org: a.org ?? "", active: isDefault,
                             source: "direct", configDir: a.dir)
     acc.plan = planName(a.oauthAccount)
+    acc.key = cacheKey(a)
     let key = cacheKey(a)
     let cache = UsageCache.shared
     func fromCache(_ note: String?) {
@@ -356,22 +492,14 @@ func fetchManaged(_ a: ManagedAccount, isDefault: Bool, force: Bool = false) asy
         acc.warning = note
         if acc.windows.isEmpty, let n = note { acc.error = n }        // 一点旧数据都没有时才算错误
     }
-    if let s = readStatusLineSnapshot(), Date().timeIntervalSince(s.ts) < 600,
-       matchStatusLineAccount(s, accounts: [a]) != nil {
-        let w = windowsFromStatusLine(s)
-        if !w.isEmpty {
-            // Claude Code 状态栏刚给的实时数字：直接用，顺便更新缓存（不发请求）
-            let merged = w + cache.windows(key).filter { !isSessionWindow($0) && !isWeeklyAllWindow($0) }
-            cache.storeSuccess(key, windows: merged, extraKeys: cache.get(key)?.extraKeys ?? [], now: s.ts)
-            acc.windows = merged
-            acc.extraKeys = cache.get(key)?.extraKeys ?? []
-            acc.updatedAt = s.ts
-            acc.source = "statusline"
-            return acc
-        }
-    }
     if !cache.shouldFetch(key, active: isDefault, force: force) {
         let c = cache.get(key)
+        if let f = c?.failure {                                     // 上次是硬失败：照样报出来，别拿旧数字当能用
+            fromCache(nil)
+            acc.error = f
+            acc.needsLogin = c?.needsLogin ?? false
+            return acc
+        }
         fromCache(c?.retryAfter.flatMap { $0 > Date() ? L("被限流，\(clockFmt.string(from: $0)) 后再查", "Rate limited, next check after \(clockFmt.string(from: $0))") : nil })
         return acc
     }
@@ -384,7 +512,7 @@ func fetchManaged(_ a: ManagedAccount, isDefault: Bool, force: Bool = false) asy
             token = t
         } else {
             switch await accessToken(for: a, force: attempt == 1) {
-            case .needLogin(let m): acc.error = m; acc.needsLogin = true; return acc
+            case .needLogin(let m): acc.error = m; acc.needsLogin = true; cache.storeFailure(key, m, needsLogin: true); return acc
             case .err(let m): fromCache(m); return acc
             case .ok(let t): token = t
             }
@@ -407,6 +535,7 @@ func fetchManaged(_ a: ManagedAccount, isDefault: Bool, force: Bool = false) asy
             if !isDefault && attempt == 0 { continue }             // 令牌被提前作废：强制刷新再试一次
             if isDefault { fromCache(L("在用账号的令牌失效（401），等 Claude Code 自己刷新", "The active account's token was rejected (401); waiting for Claude Code to refresh it")); return acc }
             acc.error = L("令牌无效（401）：需要重新登录", "Token rejected (401): sign in again"); acc.needsLogin = true
+            cache.storeFailure(key, acc.error ?? "", needsLogin: true)
             return acc
         case .http(let code):
             fromCache(L("查询用量失败：HTTP \(code)", "Usage request failed: HTTP \(code)"))

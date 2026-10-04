@@ -42,7 +42,7 @@ func cursorRPC(_ method: String, token: String) async throws -> [String: Any] {
 }
 
 func fetchCursorDirect() async -> Fetch<CursorUsage> {
-    guard let token = readCursorToken() else { return .err(L("Cursor 未登录或读不到本地数据", "Cursor is not signed in, or its local data could not be read")) }
+    guard let token = readCursorToken() else { return .notConfigured }
     do {
         let d = try await cursorRPC("GetCurrentPeriodUsage", token: token)
         var u = CursorUsage()
