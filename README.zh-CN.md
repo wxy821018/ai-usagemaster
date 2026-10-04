@@ -83,7 +83,7 @@ open "$HOME/Applications/AI UsageMaster.app"
 - **刷新只针对 UsageMaster 自己的那几份凭据**，所以不会影响你平时用的 Claude Code 的登录状态。
 - 切换账号会改两处：默认钥匙串条目 `Claude Code-credentials` 里的 Claude 登录（`claudeAiOauth`），以及 `~/.claude.json` 里的 `oauthAccount`。条目里的其它内容（比如 MCP 服务器的登录）原样保留。切换前，当前账号的登录（可能已被 Claude Code 刷新过）会先存回它自己的钥匙串条目。所有检查都在写入之前做完，写入时持有 Claude Code 自己写凭据用的同一把锁，任何一步失败都会恢复原样。需要重新登录的账号不能被切过去。
 - Claude Code 有时会在 `~/.claude/.credentials.json` 留一份凭据备份。这个文件在的时候，开着的会话只看它的修改时间来判断凭据变没变，所以切换后 AI UsageMaster 会更新一下它的修改时间。不改文件内容，文件不存在时也不会新建。
-- 如果你还在用别的账号切换工具（比如 Orca），最好只用其中一个来切换。Orca 有自己的"当前账号"记录，不会跟着这里的切换变，两边不一致时菜单里会有提示；`claude` 实际用哪个账号（包括 Orca 里开的终端）看的是默认登录，这个会跟着变。之后在 Orca 里切换会覆盖这里的选择。默认登录如果是 Orca 放进去的，AI UsageMaster 不会把它存进自己的账号副本，因为两个工具拿着同一个刷新令牌，会把对方挤下线。
+- **同时在用 Orca 时**：Orca 每次查用量、每次开 Claude 会话前，都会把它选中的 Claude 账号重新写回 Claude Code 的默认登录，所以只要 Orca 选着某个账号，这里切换几分钟内就会被它改回去。AI UsageMaster 会（通过 `orca account list`）发现这种情况，暂停自己的手动和自动切换，菜单里提示去 Orca 里切；用量显示和提醒照常。如果某个账号在这里和在 Orca 里拿的是同一个刷新令牌，任何一边刷新都会把另一边挤下线，所以 AI UsageMaster 绝不刷新这种副本，并提示你在这里重新登录这个账号，让两边各用各的。默认登录如果是 Orca 放进去的，AI UsageMaster 不会把它复制成自己的副本。
 
 ## 已知限制
 

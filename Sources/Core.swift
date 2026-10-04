@@ -49,6 +49,7 @@ struct ClaudeAccount {
     var notes: [String] = []         // 额外信息：超额用量、可用重置次数等（只读展示）
     var plan: String? = nil          // 套餐：Max 20x / Max 5x / Team / Pro
     var key: String = ""             // 身份：邮箱|组织 uuid（同一邮箱可在多个组织）
+    var sharedWithOrca = false       // 我们这份刷新令牌和 Orca 的是同一个（不能在这里刷新，要重新登录）
     /// 按账号存的状态、去重 key 一律用它，不要只用邮箱
     var ident: String { key.isEmpty ? email : key }
 

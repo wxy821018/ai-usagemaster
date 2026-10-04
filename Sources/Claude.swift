@@ -290,17 +290,45 @@ func defaultPlacedByOrca(_ d: [String: Any], credentialsFile: String) -> Bool {
     return f == rt
 }
 
-/// Orca 当前选中的 Claude 账号（邮箱）。没装 Orca 或读不到返回 nil。只读，不含令牌
-func orcaActiveClaudeEmail() -> String? {
+/// Orca 管着的 Claude 账号：选中的是谁、每个邮箱对应的 Orca 账号 id。没装 Orca 或它没在运行时返回 nil。只读，不含令牌。
+/// Orca 每次查用量、每次开 Claude 会话前都会把选中的账号重新写进 Claude Code 的默认登录（源码 prepareForRateLimitFetch /
+/// prepareForClaudeLaunch → doSyncForCurrentSelection），所以它选了账号时，这里切过去也会被它改回去
+struct OrcaClaudeState { var active: String?; var ids: [String: String] }
+func orcaClaudeState() -> OrcaClaudeState? {
     let bin = ["/opt/homebrew/bin/orca", "/usr/local/bin/orca", "/Applications/Orca.app/Contents/Resources/bin/orca"]
         .first { FileManager.default.isExecutableFile(atPath: $0) }
     guard let b = bin, let data = runCommand(b, ["account", "list", "--json"], timeout: 5),
           let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
     let r = (j["result"] as? [String: Any]) ?? j
-    guard let c = r["claude"] as? [String: Any], let act = c["activeAccountId"] as? String,
-          let accts = c["accounts"] as? [[String: Any]] else { return nil }
-    return (accts.first { $0["id"] as? String == act }?["email"] as? String)?.lowercased()
+    guard let c = r["claude"] as? [String: Any], let accts = c["accounts"] as? [[String: Any]] else { return nil }
+    var ids: [String: String] = [:]
+    for a in accts { if let e = (a["email"] as? String)?.lowercased(), let id = a["id"] as? String { ids[e] = id } }
+    let act = c["activeAccountId"] as? String
+    return OrcaClaudeState(active: (accts.first { $0["id"] as? String == act }?["email"] as? String)?.lowercased(), ids: ids)
 }
+func orcaActiveClaudeEmail() -> String? { orcaClaudeState()?.active }
+
+/// 这个账号我们手里的刷新令牌和 Orca 那份是不是同一个。同一个就绝不能在这里刷新：刷新会让 Orca 那份作废、把它挤下线。
+/// 只在内存里比较，不保存、不输出 Orca 的任何内容
+func sharesRefreshTokenWithOrca(email: String?, refreshToken: String, state: OrcaClaudeState?,
+                                orcaService: String = "Orca Claude Code Managed Credentials") -> Bool {
+    guard let e = email?.lowercased(), let id = state?.ids[e] else { return false }
+    let p = Process()
+    p.executableURL = URL(fileURLWithPath: "/usr/bin/security")
+    p.arguments = ["find-generic-password", "-s", orcaService, "-a", id, "-w"]
+    let out = Pipe()
+    p.standardOutput = out
+    p.standardError = FileHandle.nullDevice
+    guard (try? p.run()) != nil else { return false }
+    let data = out.fileHandleForReading.readDataToEndOfFile()
+    p.waitUntilExit()
+    guard p.terminationStatus == 0, let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+          let theirs = (j["claudeAiOauth"] as? [String: Any])?["refreshToken"] as? String else { return false }
+    return theirs == refreshToken
+}
+
+let sharedWithOrcaMessage = L("这个账号和 Orca 用的是同一份登录：在这里刷新会把 Orca 那边挤下线，所以这里不刷新。请在菜单里点「重新登录」，两边各用各的",
+                              "This account shares its sign-in with Orca; refreshing it here would sign Orca out, so it is not refreshed here. Choose Sign In Again in the menu to give each app its own sign-in")
 
 /// 异步版：先让目标账号的令牌可用（快到期就刷新），再在刷新锁里切换，不和本程序自己的令牌刷新交叠
 func switchDefaultSafely(to x: ManagedAccount, all: [ManagedAccount]) async -> String? {
@@ -356,6 +384,7 @@ func accessToken(for a: ManagedAccount, force: Bool = false) async -> TokenResul
         let fresh = exp / 1000 > Date().timeIntervalSince1970 + 300
         if fresh && !force, let tok = oauth["accessToken"] as? String { return .ok(tok) }
         guard let rt = oauth["refreshToken"] as? String, !rt.isEmpty else { return .needLogin(L("没有 refresh token：需要重新登录", "No refresh token: sign in again")) }
+        if sharesRefreshTokenWithOrca(email: a.email, refreshToken: rt, state: orcaClaudeState()) { return .needLogin(sharedWithOrcaMessage) }
         var req = URLRequest(url: tokenURL, timeoutInterval: 10)
         req.httpMethod = "POST"
         req.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")

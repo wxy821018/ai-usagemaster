@@ -169,6 +169,16 @@ if CommandLine.arguments.contains("--selftest") {
                 defer { try? FileManager.default.removeItem(atPath: f) }
                 guard switchDefault(to: B, all: [A, B, C, D], targets: targets) == nil else { return false }
                 return tok(svc("A")) == "tok-A-old" && tok(svc("default")) == "tok-B" && email() == "b@x" }),
+            (L("和 Orca 共用刷新令牌能识别出来，不同的不误报", "A refresh token shared with Orca is detected; a different one is not"), {
+                let orcaSvc = svc("orca")
+                let st = OrcaClaudeState(active: "b@x", ids: ["b@x": "orca-id-b"])
+                let item: [String: Any] = ["claudeAiOauth": ["refreshToken": "rt-shared", "accessToken": "x"]]
+                guard let hex = try? JSONSerialization.data(withJSONObject: item).map({ String(format: "%02x", $0) }).joined(),
+                      runCommand("/usr/bin/security", ["add-generic-password", "-U", "-a", "orca-id-b", "-s", orcaSvc, "-X", hex], timeout: 8) != nil else { return false }
+                defer { _ = runCommand("/usr/bin/security", ["delete-generic-password", "-a", "orca-id-b", "-s", orcaSvc], timeout: 8) }
+                return sharesRefreshTokenWithOrca(email: "B@x", refreshToken: "rt-shared", state: st, orcaService: orcaSvc)
+                    && !sharesRefreshTokenWithOrca(email: "b@x", refreshToken: "rt-other", state: st, orcaService: orcaSvc)
+                    && !sharesRefreshTokenWithOrca(email: "c@x", refreshToken: "rt-shared", state: st, orcaService: orcaSvc) }),
             (L("目标账号缺账号信息 → 拒绝，什么都不改", "Target without profile → refused, nothing changed"), {
                 guard setup(), switchDefault(to: C, all: [A, B, C, D], targets: targets) != nil else { return false }
                 return tok(svc("default")) == "tok-A-rotated" && tok(svc("A")) == "tok-A-old" && email() == "a@x" }),

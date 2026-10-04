@@ -42,7 +42,7 @@ func decideAutoSwitch(_ accounts: [ClaudeAccount], now: Date, pinnedDir: String?
     if let e = cur.error {
         return AutoSwitchDecision(target: nil, reason: L("\(cur.label) 的数据暂时取不到（\(e)），不切换", "No data for \(cur.label) right now (\(e)), not switching"))
     }
-    let candidates = accounts.filter { !$0.active && usable($0) && $0.configDir != nil }
+    let candidates = accounts.filter { !$0.active && usable($0) && $0.configDir != nil && !$0.sharedWithOrca }
         .sorted { (urgency($0), -sess($0)) > (urgency($1), -sess($1)) }
 
     if !usable(cur) {

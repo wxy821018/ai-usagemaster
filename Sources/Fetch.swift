@@ -93,7 +93,19 @@ func fetchAll(force: Bool = false) async -> Snapshot {
     }
     async let cursorTask = fetchCursorDirect()
     async let servicesTask = fetchServices(force: force)
-    async let orcaTask = Task.detached { orcaActiveClaudeEmail() }.value
+    async let orcaTask = Task.detached { orcaClaudeState() }.value
     let (cursor, services, orca) = await (cursorTask, servicesTask, orcaTask)
-    return Snapshot(claude: claude, cursor: cursor, services: services, orcaActive: orca, at: Date())
+    // 和 Orca 共用同一个刷新令牌的账号：标出来（菜单提示重新登录、不能被切过去）
+    if let st = orca, case .ok(var accts) = claude, !managed.isEmpty {
+        for i in accts.indices {
+            guard let m = managed.first(where: { $0.dir == accts[i].configDir }),
+                  let rt = (readKeychainJSON(service: m.service)?["claudeAiOauth"] as? [String: Any])?["refreshToken"] as? String else { continue }
+            if sharesRefreshTokenWithOrca(email: m.email, refreshToken: rt, state: st) {
+                accts[i].sharedWithOrca = true
+                accts[i].notes.insert(L("⚠︎ 和 Orca 共用同一份登录（任一边刷新都会把另一边挤下线），请点「重新登录」", "⚠︎ Shares its sign-in with Orca (a refresh on either side signs the other out); choose Sign In Again"), at: 0)
+            }
+        }
+        claude = .ok(accts)
+    }
+    return Snapshot(claude: claude, cursor: cursor, services: services, orcaActive: orca?.active, at: Date())
 }

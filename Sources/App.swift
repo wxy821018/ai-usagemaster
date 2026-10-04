@@ -238,11 +238,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             line(L("  已自动移除重复添加的账号：", "  Removed duplicate accounts: ") + removedDuplicates.joined(separator: listSep), .secondaryLabelColor, small: true)
         }
         if let note = switchNote { line("  \(note)", .secondaryLabelColor, small: true) }
-        // Orca 有自己的"当前账号"，不会跟着这里变；不一致时提醒，免得看 Orca 界面以为没切成功
-        if let o = orcaActive, let cur = claude?.first(where: { $0.active }), o != cur.email.lowercased() {
+        // Orca 选了账号时，它每次查用量、开会话前都会把那个账号写回 Claude Code 的默认登录：这里切了也会被改回去
+        if let o = orcaActive {
             let oLabel = claude?.first(where: { $0.email.lowercased() == o })?.label ?? o
-            line(L("  ⓘ Orca 里选中的是 \(oLabel)，Claude Code 实际在用 \(cur.label)。在 Orca 里切换会覆盖这里的选择",
-                   "  ⓘ Orca shows \(oLabel), but Claude Code is using \(cur.label). Switching in Orca overrides this"),
+            line(L("  ⓘ Orca 正在管理 Claude 账号（选中 \(oLabel)），它会把这里的切换改回去，所以这里暂停切换：请在 Orca 里切",
+                   "  ⓘ Orca is managing Claude accounts (\(oLabel) selected) and would undo a switch made here, so switching is paused here; switch in Orca"),
                  .secondaryLabelColor, small: true)
         }
         if let e = claudeErr {
@@ -254,17 +254,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 if i > 0 || claudeErr != nil { menu.addItem(.separator()) }
                 let hi = NSMenuItem(title: "", action: a.active ? nil : #selector(switchTo(_:)), keyEquivalent: "")
                 let ht = a.active ? "● Claude · \(a.label)  \(a.email)   " + L("使用中", "in use")
-                    : "○ Claude · \(a.label)  \(a.email)   " + (a.needsLogin ? L("需要重新登录", "needs sign-in") : L("点此切换", "click to switch"))
+                    : "○ Claude · \(a.label)  \(a.email)   " + (a.needsLogin || a.sharedWithOrca ? L("需要重新登录", "needs sign-in")
+                        : (orcaActive != nil ? L("在 Orca 里切换", "switch in Orca") : L("点此切换", "click to switch")))
                 hi.attributedTitle = NSAttributedString(string: ht, attributes: [.font: NSFont.boldSystemFont(ofSize: 13)])
                 hi.target = self
                 hi.representedObject = a.configDir
-                hi.isEnabled = !a.active && a.configDir != nil && !a.needsLogin && !switching
+                hi.isEnabled = !a.active && a.configDir != nil && !a.needsLogin && !a.sharedWithOrca && !switching && orcaActive == nil
                 menu.addItem(hi)
                 if !a.org.isEmpty || a.plan != nil { line("  " + [a.org, a.plan ?? ""].filter { !$0.isEmpty }.joined(separator: " · "), small: true) }
                 for n in a.notes { line("  \(n)", small: true) }
                 if let e = a.error { line("  ⚠︎ \(e)", .systemOrange) }
                 if let w = a.warning, a.error == nil { line("  ⚠︎ \(w)" + staleSuffix(a.updatedAt, now), .secondaryLabelColor, small: true) }
-                if a.needsLogin, let dir = a.configDir {
+                if a.needsLogin || a.sharedWithOrca, let dir = a.configDir {
                     let mi = NSMenuItem(title: L("  重新登录 \(a.label)…", "  Sign in to \(a.label) again…"), action: #selector(relogin(_:)), keyEquivalent: "")
                     mi.target = self
                     mi.representedObject = dir
@@ -520,6 +521,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             lastExtraKeys[a.ident] = now
         }
         guard autoSwitch, !events.isEmpty || Date().timeIntervalSince(lastAutoSwitch) > 15 * 60 else { return }
+        guard orcaActive == nil else { return }       // Orca 在管账号：自动切换暂停，免得和它来回拉锯
         let d = decideAutoSwitch(accounts, now: Date(), pinnedDir: pinnedDir)
         guard let dir = d.target else { return }
         pinnedDir = nil
@@ -564,6 +566,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func performSwitch(dir: String) {
         let all = listManagedAccounts()
         guard let x = all.first(where: { $0.dir == dir }), !switching else { return }
+        if orcaActive != nil {
+            switchNote = L("Orca 正在管理 Claude 账号，这里切了会被它改回去：请在 Orca 里切换", "Orca is managing Claude accounts and would undo this; switch in Orca")
+            return
+        }
+        if let a = claude?.first(where: { $0.configDir == dir }), a.sharedWithOrca {
+            switchNote = sharedWithOrcaMessage
+            return
+        }
         if let a = claude?.first(where: { $0.configDir == dir }), a.needsLogin {
             switchNote = L("\(a.label) 需要重新登录，先在菜单里重新登录它再切换", "\(a.label) needs to sign in again; do that from the menu first")
             return
