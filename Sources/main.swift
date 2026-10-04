@@ -162,6 +162,13 @@ if CommandLine.arguments.contains("--selftest") {
                 let a = readKeychainJSON(service: svc("A")) ?? [:]
                 return tok(svc("A")) == "tok-A-rotated" && a["mcpOAuth"] == nil && email() == "b@x"
                     && readJSONFile(targets.configPath)?["other"] as? String == "keep" }),
+            (L("默认登录是 Orca 放的 → 切换照常，但不把它存进当前账号自己的条目", "Default sign-in placed by Orca → switch works, current account's own item untouched"), {
+                guard setup() else { return false }
+                let f = targets.claudeDir + "/.credentials.json"
+                try? JSONSerialization.data(withJSONObject: dflt).write(to: URL(fileURLWithPath: f))
+                defer { try? FileManager.default.removeItem(atPath: f) }
+                guard switchDefault(to: B, all: [A, B, C, D], targets: targets) == nil else { return false }
+                return tok(svc("A")) == "tok-A-old" && tok(svc("default")) == "tok-B" && email() == "b@x" }),
             (L("目标账号缺账号信息 → 拒绝，什么都不改", "Target without profile → refused, nothing changed"), {
                 guard setup(), switchDefault(to: C, all: [A, B, C, D], targets: targets) != nil else { return false }
                 return tok(svc("default")) == "tok-A-rotated" && tok(svc("A")) == "tok-A-old" && email() == "a@x" }),

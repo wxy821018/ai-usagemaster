@@ -236,9 +236,12 @@ func switchDefault(to x: ManagedAccount, all: [ManagedAccount], targets: SwitchT
         case .unreadable: return L("读不出默认凭据，没有切换", "Could not read the default credentials; nothing was switched")
         case .ok(let o): d = o
         }
-        // 1) 当前账号：只存回 claudeAiOauth
+        // 1) 当前账号：只存回 claudeAiOauth。
+        //    例外：默认登录是 Orca 放进去的（它会把同一份写进 <配置目录>/.credentials.json，Claude Code 在 Mac 上不写这个文件）。
+        //    那是 Orca 自己的授权，存一份到我们这里会变成两边共用一个刷新令牌，谁先刷新另一边就作废，所以不存，原样留给 Orca。
         var restoreCur: (service: String, item: KeychainRead)?
-        if let oaCur = readJSONFile(targets.configPath)?["oauthAccount"] as? [String: Any],
+        let orcaPlaced = defaultPlacedByOrca(d, credentialsFile: targets.claudeDir + "/.credentials.json")
+        if !orcaPlaced, let oaCur = readJSONFile(targets.configPath)?["oauthAccount"] as? [String: Any],
            let email = (oaCur["emailAddress"] as? String)?.lowercased(),
            let cur = all.first(where: { identityKey($0) == email + "|" + ((oaCur["organizationUuid"] as? String) ?? "") }),
            cur.dir != x.dir, let dc = d["claudeAiOauth"] as? [String: Any] {
@@ -278,6 +281,25 @@ func switchDefault(to x: ManagedAccount, all: [ManagedAccount], targets: SwitchT
     }
     if r == nil && targets.nudge { nudgeRunningSessions() }
     return r
+}
+
+/// 默认登录是不是 Orca 放进去的：明文副本里的刷新令牌和默认钥匙串里的一样
+func defaultPlacedByOrca(_ d: [String: Any], credentialsFile: String) -> Bool {
+    guard let rt = (d["claudeAiOauth"] as? [String: Any])?["refreshToken"] as? String, !rt.isEmpty,
+          let f = (readJSONFile(credentialsFile)?["claudeAiOauth"] as? [String: Any])?["refreshToken"] as? String else { return false }
+    return f == rt
+}
+
+/// Orca 当前选中的 Claude 账号（邮箱）。没装 Orca 或读不到返回 nil。只读，不含令牌
+func orcaActiveClaudeEmail() -> String? {
+    let bin = ["/opt/homebrew/bin/orca", "/usr/local/bin/orca", "/Applications/Orca.app/Contents/Resources/bin/orca"]
+        .first { FileManager.default.isExecutableFile(atPath: $0) }
+    guard let b = bin, let data = runCommand(b, ["account", "list", "--json"], timeout: 5),
+          let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+    let r = (j["result"] as? [String: Any]) ?? j
+    guard let c = r["claude"] as? [String: Any], let act = c["activeAccountId"] as? String,
+          let accts = c["accounts"] as? [[String: Any]] else { return nil }
+    return (accts.first { $0["id"] as? String == act }?["email"] as? String)?.lowercased()
 }
 
 /// 异步版：先让目标账号的令牌可用（快到期就刷新），再在刷新锁里切换，不和本程序自己的令牌刷新交叠

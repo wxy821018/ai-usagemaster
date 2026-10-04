@@ -31,9 +31,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var cursorOKAt: Date?
     var cursorErr: String?
     var services: [ServiceStatus] = []
+    var orcaActive: String?
     var tokenStats: TokenStatsSummary?
     var tokenStatsRunning = false
     var switching = false
+    var refreshAgain = false
+    var refreshAgainForce = false
     var cursorConfigured = true
     var fetching = false
     var switchNote: String?
@@ -90,8 +93,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func refresh(force: Bool = false) {
+        // 正在刷新时又来了请求（比如刚切换完账号）：记下来，这一轮结束后马上再刷一次，不能直接丢掉
         // 防卡死：上一轮超过 60 秒还没回来就当它丢了
-        if fetching, let s = fetchStartedAt, Date().timeIntervalSince(s) < 60 { return }
+        if fetching, let s = fetchStartedAt, Date().timeIntervalSince(s) < 60 {
+            refreshAgain = true
+            refreshAgainForce = refreshAgainForce || force
+            return
+        }
         fetching = true
         fetchStartedAt = Date()
         Task {
@@ -108,8 +116,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
             if case .ok = s.cursor { self.cursorConfigured = true }
             self.services = s.services
+            self.orcaActive = s.orcaActive
             self.fetching = false
             recordHistory(s)
+            if self.refreshAgain {
+                let f = self.refreshAgainForce
+                self.refreshAgain = false
+                self.refreshAgainForce = false
+                self.refresh(force: f)
+            }
             self.scheduleRetryIfNeeded()
             self.maybeAutoSwitch()
             if let a = self.claude, self.claudeErr == nil {
@@ -223,6 +238,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             line(L("  已自动移除重复添加的账号：", "  Removed duplicate accounts: ") + removedDuplicates.joined(separator: listSep), .secondaryLabelColor, small: true)
         }
         if let note = switchNote { line("  \(note)", .secondaryLabelColor, small: true) }
+        // Orca 有自己的"当前账号"，不会跟着这里变；不一致时提醒，免得看 Orca 界面以为没切成功
+        if let o = orcaActive, let cur = claude?.first(where: { $0.active }), o != cur.email.lowercased() {
+            let oLabel = claude?.first(where: { $0.email.lowercased() == o })?.label ?? o
+            line(L("  ⓘ Orca 里选中的是 \(oLabel)，Claude Code 实际在用 \(cur.label)。在 Orca 里切换会覆盖这里的选择",
+                   "  ⓘ Orca shows \(oLabel), but Claude Code is using \(cur.label). Switching in Orca overrides this"),
+                 .secondaryLabelColor, small: true)
+        }
         if let e = claudeErr {
             header("Claude")
             line(L("  ⚠︎ 最近一次刷新失败：", "  ⚠︎ Last refresh failed: ") + e + (claude == nil ? "" : staleSuffix(claudeOKAt, now)), .systemOrange)
@@ -512,6 +534,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             if let err = err {
                 self.switchNote = L("自动切换失败：\(err)", "Automatic switch failed: \(err)")
             } else {
+                self.markActive(dir: x.dir)
                 self.switchNote = L("自动切换：\(d.reason)（\(clockFmt.string(from: Date()))）", "Automatic switch: \(d.reason) (\(clockFmt.string(from: Date())))")
                 AlertCenter.shared.post(.switched, L("已自动切换 Claude 账号", "Switched Claude accounts automatically"), d.reason)
                 self.refresh()
@@ -527,6 +550,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc func setManualMode() { autoSwitch = false; pinnedDir = nil; switchNote = L("切换方式：手动（不会自动换账号）", "Switching: manual (never switches on its own)") }
     @objc func switchTo(_ sender: NSMenuItem) {
         if let dir = sender.representedObject as? String { performSwitch(dir: dir) }
+    }
+
+    /// 切换成功后立刻在本地把"使用中"标到新账号上并重画菜单栏，不用等下一轮刷新回来
+    func markActive(dir: String) {
+        guard var a = claude else { return }
+        for i in a.indices { a[i].active = a[i].configDir == dir }
+        claude = a
+        renderTitle()
     }
 
     /// 手动切换（菜单里点账号、或点了建议切换的通知）
@@ -545,13 +576,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             if let err = err {
                 self.switchNote = L("切换失败：\(err)", "Switch failed: \(err)")
             } else {
+                self.markActive(dir: x.dir)
                 if self.autoSwitch { self.pinnedDir = x.dir }
                 let who = x.email ?? ""
                 self.switchNote = L("已切换到 \(who)：新开的 claude 会话直接用它，已经开着的会话下一次请求时跟着换（最多约 30 秒）",
                                     "Switched to \(who). New claude sessions use it, and open sessions follow on their next request (within about 30 seconds)")
                     + (self.autoSwitch ? L("。自动模式：它用完前不会被自动换走", ". Automatic mode: it stays until it runs out") : "")
             }
-            self.refresh()
+            self.refresh(force: true)
         }
     }
     @objc func toggleAlert(_ sender: NSMenuItem) {

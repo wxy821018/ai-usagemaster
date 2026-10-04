@@ -11,6 +11,7 @@ struct Snapshot {
     var claude: Fetch<[ClaudeAccount]>
     var cursor: Fetch<CursorUsage>
     var services: [ServiceStatus] = []
+    var orcaActive: String? = nil       // Orca 里选中的 Claude 账号（邮箱）
     var at: Date
 }
 
@@ -92,6 +93,7 @@ func fetchAll(force: Bool = false) async -> Snapshot {
     }
     async let cursorTask = fetchCursorDirect()
     async let servicesTask = fetchServices(force: force)
-    let (cursor, services) = await (cursorTask, servicesTask)
-    return Snapshot(claude: claude, cursor: cursor, services: services, at: Date())
+    async let orcaTask = Task.detached { orcaActiveClaudeEmail() }.value
+    let (cursor, services, orca) = await (cursorTask, servicesTask, orcaTask)
+    return Snapshot(claude: claude, cursor: cursor, services: services, orcaActive: orca, at: Date())
 }
