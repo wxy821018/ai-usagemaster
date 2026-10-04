@@ -36,18 +36,18 @@ func cursorRPC(_ method: String, token: String) async throws -> [String: Any] {
     let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
     guard code == 200 else {
         throw NSError(domain: "cursor", code: code, userInfo: [NSLocalizedDescriptionKey:
-            code == 401 ? "令牌失效（401）：打开一下 Cursor 就会刷新" : "HTTP \(code)"])
+            code == 401 ? L("令牌失效（401）：打开一下 Cursor 就会刷新", "Token rejected (401): opening Cursor once refreshes it") : "HTTP \(code)"])
     }
     return (try JSONSerialization.jsonObject(with: data) as? [String: Any]) ?? [:]
 }
 
 func fetchCursorDirect() async -> Fetch<CursorUsage> {
-    guard let token = readCursorToken() else { return .err("Cursor 未登录或读不到本地数据") }
+    guard let token = readCursorToken() else { return .err(L("Cursor 未登录或读不到本地数据", "Cursor is not signed in, or its local data could not be read")) }
     do {
         let d = try await cursorRPC("GetCurrentPeriodUsage", token: token)
         var u = CursorUsage()
         u.cycleEnd = msDate(d["billingCycleEnd"])
-        guard let p = d["planUsage"] as? [String: Any] else { return .err("返回里没有 planUsage，格式可能变了") }
+        guard let p = d["planUsage"] as? [String: Any] else { return .err(L("返回里没有 planUsage，格式可能变了", "No planUsage in the response; the format may have changed")) }
         // 与 Cursor 3.21 客户端同一公式：limit>0 时 min(included/limit,100%)，否则用 totalPercentUsed。
         // proto3 JSON 省略 0 值，所以 includedSpend 缺失按 0。
         let used = Int(num(p["includedSpend"]) ?? 0)
@@ -59,11 +59,11 @@ func fetchCursorDirect() async -> Fetch<CursorUsage> {
         } else if let t = num(p["totalPercentUsed"]) {
             u.percent = t
         } else {
-            return .err("返回里既没有包含额度上限也没有百分比")
+            return .err(L("返回里既没有包含额度上限也没有百分比", "The response has neither an included-usage limit nor a percentage"))
         }
         if let s = d["spendLimitUsage"] as? [String: Any], let lim = num(s["pooledLimit"]), lim > 0 {
             let pooledUsed = num(s["pooledUsed"]) ?? 0
-            u.pooled = "团队共享额度：\(dollars(Int(pooledUsed))) / \(dollars(Int(lim)))"
+            u.pooled = L("团队共享额度：\(dollars(Int(pooledUsed))) / \(dollars(Int(lim)))", "Team pooled usage: \(dollars(Int(pooledUsed))) / \(dollars(Int(lim)))")
         }
         if let info = try? await cursorRPC("GetPlanInfo", token: token), let pi = info["planInfo"] as? [String: Any] {
             let name = pi["planName"] as? String ?? ""

@@ -157,15 +157,15 @@ func switchDefault(to x: ManagedAccount, all: [ManagedAccount]) -> String? {
        let curCreds = readKeychainJSON(service: defaultService) {
         _ = writeKeychainJSON(service: curAcc.service, curCreds)
     }
-    guard let creds = readKeychainJSON(service: x.service) else { return "这个账号还没登录完成" }
-    guard writeKeychainJSON(service: defaultService, creds) else { return "写入默认凭据失败" }
-    guard var cfg = readJSONFile(defaultConfigPath), let oa = x.oauthAccount else { return "读不到 ~/.claude.json" }
+    guard let creds = readKeychainJSON(service: x.service) else { return L("这个账号还没登录完成", "This account has not finished signing in") }
+    guard writeKeychainJSON(service: defaultService, creds) else { return L("写入默认凭据失败", "Could not write the default credentials") }
+    guard var cfg = readJSONFile(defaultConfigPath), let oa = x.oauthAccount else { return L("读不到 ~/.claude.json", "Could not read ~/.claude.json") }
     cfg["oauthAccount"] = oa
-    guard let data = try? JSONSerialization.data(withJSONObject: cfg, options: [.prettyPrinted]) else { return "写 ~/.claude.json 失败" }
+    guard let data = try? JSONSerialization.data(withJSONObject: cfg, options: [.prettyPrinted]) else { return L("写 ~/.claude.json 失败", "Could not write ~/.claude.json") }
     do {
         try data.write(to: URL(fileURLWithPath: defaultConfigPath), options: .atomic)
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: defaultConfigPath)
-    } catch { return "写 ~/.claude.json 失败" }
+    } catch { return L("写 ~/.claude.json 失败", "Could not write ~/.claude.json") }
     return nil
 }
 
@@ -199,12 +199,12 @@ enum TokenResult { case ok(String), needLogin(String), err(String) }
 func accessToken(for a: ManagedAccount, force: Bool = false) async -> TokenResult {
     await RefreshGate.run {
         guard var root = readKeychainJSON(service: a.service), var oauth = root["claudeAiOauth"] as? [String: Any] else {
-            return .needLogin("还没登录：菜单里点「重新登录」")
+            return .needLogin(L("还没登录：菜单里点「重新登录」", "Not signed in: choose Sign In Again in the menu"))
         }
         let exp = num(oauth["expiresAt"]) ?? 0
         let fresh = exp / 1000 > Date().timeIntervalSince1970 + 300
         if fresh && !force, let tok = oauth["accessToken"] as? String { return .ok(tok) }
-        guard let rt = oauth["refreshToken"] as? String, !rt.isEmpty else { return .needLogin("没有 refresh token：需要重新登录") }
+        guard let rt = oauth["refreshToken"] as? String, !rt.isEmpty else { return .needLogin(L("没有 refresh token：需要重新登录", "No refresh token: sign in again")) }
         var req = URLRequest(url: tokenURL, timeoutInterval: 10)
         req.httpMethod = "POST"
         req.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
@@ -216,9 +216,9 @@ func accessToken(for a: ManagedAccount, force: Bool = false) async -> TokenResul
         do {
             let (body, resp) = try await session.data(for: req)
             let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
-            if code == 400 || code == 401 { return .needLogin("登录已失效（刷新被拒 \(code)）：需要重新登录") }
+            if code == 400 || code == 401 { return .needLogin(L("登录已失效（刷新被拒 \(code)）：需要重新登录", "Sign-in expired (refresh rejected, \(code)): sign in again")) }
             guard code == 200, let j = try JSONSerialization.jsonObject(with: body) as? [String: Any],
-                  let at = j["access_token"] as? String, !at.isEmpty else { return .err("刷新令牌失败：HTTP \(code)") }
+                  let at = j["access_token"] as? String, !at.isEmpty else { return .err(L("刷新令牌失败：HTTP \(code)", "Token refresh failed: HTTP \(code)")) }
             oauth["accessToken"] = at
             if let rt2 = j["refresh_token"] as? String, !rt2.isEmpty { oauth["refreshToken"] = rt2 }
             if let ei = num(j["expires_in"]) { oauth["expiresAt"] = (Date().timeIntervalSince1970 + ei) * 1000 }
@@ -228,7 +228,7 @@ func accessToken(for a: ManagedAccount, force: Bool = false) async -> TokenResul
             if !writeKeychainJSON(service: a.service, root) { return .ok(at) }
             return .ok(at)
         } catch {
-            return .err("刷新令牌失败：\(describe(error))")
+            return .err(L("刷新令牌失败：\(describe(error))", "Token refresh failed: \(describe(error))"))
         }
     }
 }
@@ -244,7 +244,8 @@ func usageRequest(token: String) -> URLRequest {
 
 /// 用量返回里的常规字段；其余字段一旦非空，视为"官方新给的额度项"（活动、临时额度、重置额度等）
 let regularUsageKeys: Set<String> = ["five_hour", "seven_day", "seven_day_oauth_apps", "seven_day_opus", "seven_day_sonnet",
-    "seven_day_cowork", "extra_usage", "limits", "spend", "member_dashboard_available", "seven_day_breakdown"]
+    "seven_day_cowork", "extra_usage", "limits", "spend", "member_dashboard_available", "seven_day_breakdown",
+    "seven_day_omelette", "cinder_cove", "cedar_ember", "juniper_tide"]
 func extraUsageKeys(_ d: [String: Any]) -> [String] {
     d.filter { !regularUsageKeys.contains($0.key) && !($0.value is NSNull) }.map { $0.key }.sorted()
 }
@@ -256,27 +257,65 @@ func parseUsage(_ d: [String: Any], now: Date) -> [UsageWindow] {
         for l in limits {
             guard let pct = num(l["percent"]) else { continue }
             let kind = l["kind"] as? String ?? ""
-            var label: String
-            switch kind {
-            case "session": label = "5 小时窗口"
-            case "weekly_all": label = "每周（全部模型）"
-            case "weekly_scoped":
-                let scope = l["scope"] as? [String: Any]
-                let name = ((scope?["model"] as? [String: Any])?["display_name"] as? String)
-                    ?? ((scope?["surface"] as? [String: Any])?["display_name"] as? String)
-                label = "每周（\(name ?? "指定范围")）"
-            default: label = kind
-            }
-            out.append(makeWindow(label, percent: pct, resetsAt: parseISO(l["resets_at"]), now: now))
+            let scope = l["scope"] as? [String: Any]
+            let name = ((scope?["model"] as? [String: Any])?["display_name"] as? String)
+                ?? ((scope?["surface"] as? [String: Any])?["display_name"] as? String)
+            out.append(makeWindow(windowLabel(kind: kind, scope: name), percent: pct, resetsAt: parseISO(l["resets_at"]), now: now,
+                                  kind: kind, severity: l["severity"] as? String, isActive: (l["is_active"] as? Bool) ?? false, scope: name))
         }
         return out
     }
-    for (key, label) in [("five_hour", "5 小时窗口"), ("seven_day", "每周（全部模型）")] {
+    for (key, kind) in [("five_hour", "session"), ("seven_day", "weekly_all")] {
         if let w = d[key] as? [String: Any], let pct = num(w["utilization"]) {
-            out.append(makeWindow(label, percent: pct, resetsAt: parseISO(w["resets_at"]), now: now))
+            out.append(makeWindow(windowLabel(kind: kind), percent: pct, resetsAt: parseISO(w["resets_at"]), now: now, kind: kind))
         }
     }
     return out
+}
+
+/// 额外信息（只读展示）：超额用量 / usage credits、官方给的可用重置次数
+func usageNotes(_ d: [String: Any]) -> [String] {
+    var out: [String] = []
+    if let e = d["extra_usage"] as? [String: Any] {
+        let cur = ((e["currency"] as? String) ?? "USD").uppercased()
+        let exp = Double((e["decimal_places"] as? Int) ?? (["JPY", "KRW", "VND"].contains(cur) ? 0 : 2))
+        func money(_ v: Any?) -> String? {
+            guard let x = num(v) else { return nil }
+            let amt = x / pow(10, exp)
+            return cur == "USD" ? String(format: "$%.2f", amt) : String(format: "%.2f %@", amt, cur)
+        }
+        if (e["is_enabled"] as? Bool) == false {
+            let reasons = ["org_level_disabled": L("组织没开", "turned off for the organization"),
+                           "user_disabled": L("你自己关了", "turned off by you"),
+                           "spend_limit_reached": L("已到花费上限", "spend limit reached")]
+            let r = (e["disabled_reason"] as? String).map { reasons[$0] ?? $0 }
+            out.append(L("超额用量：未开启", "Extra usage: off") + (r.map { L("（\($0)）", " (\($0))") } ?? ""))
+        } else if e["is_enabled"] as? Bool == true {
+            let used = money(e["used_credits"]) ?? "$0.00"
+            if let lim = num(e["monthly_limit"]), lim > 0, let ls = money(lim) { out.append(L("超额用量：已用 \(used) / 上限 \(ls)（每月 1 号重置）", "Extra usage: \(used) of \(ls) used (resets on the 1st)")) }
+            else if e["monthly_limit"] is NSNull || e["monthly_limit"] == nil { out.append(L("超额用量：已开启，无上限，本月已用 \(used)", "Extra usage: on, no limit, \(used) used this month")) }
+        }
+    }
+    for key in ["cedar_ember", "juniper_tide"] {
+        guard let c = d[key] as? [String: Any] else { continue }
+        let grants = c["grants"] as? [[String: Any]] ?? []
+        let left = grants.compactMap { num($0["resets_left"]) }.reduce(0, +)
+        if left > 0 { out.append(L("官方给的可用重置次数：\(Int(left))（只显示，不会自动领取）", "Usage resets granted: \(Int(left)) (shown only, never redeemed automatically)")) }
+    }
+    return out
+}
+
+/// 套餐名：从账号信息（不含令牌）推断
+func planName(_ oa: [String: Any]?) -> String? {
+    guard let oa = oa else { return nil }
+    let tier = ((oa["userRateLimitTier"] as? String) ?? (oa["organizationRateLimitTier"] as? String) ?? "").lowercased()
+    let org = ((oa["organizationType"] as? String) ?? "").lowercased()
+    if tier.contains("max_20x") { return org.contains("team") ? L("Team（Max 20x 档）", "Team (Max 20x tier)") : "Max 20x" }
+    if tier.contains("max_5x") { return org.contains("team") ? L("Team（Max 5x 档）", "Team (Max 5x tier)") : "Max 5x" }
+    if org.contains("team") { return "Team" }
+    if org.contains("enterprise") { return "Enterprise" }
+    if org.contains("pro") { return "Pro" }
+    return nil
 }
 
 func cacheKey(_ a: ManagedAccount) -> String { identityKey(a) ?? a.dir }
@@ -294,19 +333,35 @@ func defaultAccessToken() -> String? {
 func fetchManaged(_ a: ManagedAccount, isDefault: Bool, force: Bool = false) async -> ClaudeAccount {
     let email = a.email ?? (a.dir as NSString).lastPathComponent
     var acc = ClaudeAccount(label: accountLabel(dir: a.dir, email: email), email: email, org: a.org ?? "", active: isDefault,
-                            source: "直连", configDir: a.dir)
+                            source: "direct", configDir: a.dir)
+    acc.plan = planName(a.oauthAccount)
     let key = cacheKey(a)
     let cache = UsageCache.shared
     func fromCache(_ note: String?) {
         acc.windows = cache.windows(key)
         acc.extraKeys = cache.get(key)?.extraKeys ?? []
+        acc.notes = cache.get(key)?.notes ?? []
         acc.updatedAt = cache.get(key)?.fetchedAt
         acc.warning = note
         if acc.windows.isEmpty, let n = note { acc.error = n }        // 一点旧数据都没有时才算错误
     }
+    if let s = readStatusLineSnapshot(), Date().timeIntervalSince(s.ts) < 600,
+       matchStatusLineAccount(s, accounts: [a]) != nil {
+        let w = windowsFromStatusLine(s)
+        if !w.isEmpty {
+            // Claude Code 状态栏刚给的实时数字：直接用，顺便更新缓存（不发请求）
+            let merged = w + cache.windows(key).filter { !isSessionWindow($0) && !isWeeklyAllWindow($0) }
+            cache.storeSuccess(key, windows: merged, extraKeys: cache.get(key)?.extraKeys ?? [], now: s.ts)
+            acc.windows = merged
+            acc.extraKeys = cache.get(key)?.extraKeys ?? []
+            acc.updatedAt = s.ts
+            acc.source = "statusline"
+            return acc
+        }
+    }
     if !cache.shouldFetch(key, active: isDefault, force: force) {
         let c = cache.get(key)
-        fromCache(c?.retryAfter.flatMap { $0 > Date() ? "被限流，\(clockFmt.string(from: $0)) 后再查" : nil })
+        fromCache(c?.retryAfter.flatMap { $0 > Date() ? L("被限流，\(clockFmt.string(from: $0)) 后再查", "Rate limited, next check after \(clockFmt.string(from: $0))") : nil })
         return acc
     }
     cache.markAttempt(key)
@@ -314,7 +369,7 @@ func fetchManaged(_ a: ManagedAccount, isDefault: Bool, force: Bool = false) asy
         let token: String
         if isDefault {
             // 在用账号：令牌归 Claude Code 管，只读默认凭据，不刷新
-            guard let t = defaultAccessToken() else { fromCache("在用账号的令牌已过期，等 Claude Code 自己刷新"); return acc }
+            guard let t = defaultAccessToken() else { fromCache(L("在用账号的令牌已过期，等 Claude Code 自己刷新", "The active account's token has expired; waiting for Claude Code to refresh it")); return acc }
             token = t
         } else {
             switch await accessToken(for: a, force: attempt == 1) {
@@ -326,23 +381,24 @@ func fetchManaged(_ a: ManagedAccount, isDefault: Bool, force: Bool = false) asy
         switch await requestUsage(token: token) {
         case .ok(let d):
             let w = parseUsage(d, now: Date())
-            if w.isEmpty { fromCache("返回格式变了，解析不出用量"); return acc }
-            cache.storeSuccess(key, windows: w, extraKeys: extraUsageKeys(d))
+            if w.isEmpty { fromCache(L("返回格式变了，解析不出用量", "Unexpected response format, could not read usage")); return acc }
+            cache.storeSuccess(key, windows: w, extraKeys: extraUsageKeys(d), notes: usageNotes(d))
             acc.windows = w
             acc.extraKeys = extraUsageKeys(d)
+            acc.notes = usageNotes(d)
             acc.updatedAt = Date()
             return acc
         case .rateLimited(let ra):
             let until = cache.storeRateLimited(key, retryAfterHeader: ra)
-            fromCache("被限流（429），\(clockFmt.string(from: until)) 后再查")
+            fromCache(L("被限流（429），\(clockFmt.string(from: until)) 后再查", "Rate limited (429), next check after \(clockFmt.string(from: until))"))
             return acc
         case .unauthorized:
             if !isDefault && attempt == 0 { continue }             // 令牌被提前作废：强制刷新再试一次
-            if isDefault { fromCache("在用账号的令牌失效（401），等 Claude Code 自己刷新"); return acc }
-            acc.error = "令牌无效（401）：需要重新登录"; acc.needsLogin = true
+            if isDefault { fromCache(L("在用账号的令牌失效（401），等 Claude Code 自己刷新", "The active account's token was rejected (401); waiting for Claude Code to refresh it")); return acc }
+            acc.error = L("令牌无效（401）：需要重新登录", "Token rejected (401): sign in again"); acc.needsLogin = true
             return acc
         case .http(let code):
-            fromCache("查询用量失败：HTTP \(code)")
+            fromCache(L("查询用量失败：HTTP \(code)", "Usage request failed: HTTP \(code)"))
             return acc
         case .failure(let m):
             fromCache(m)
@@ -357,7 +413,7 @@ func fetchClaudeDirect(force: Bool = false) async -> Fetch<ClaudeAccount> {
     let fake = ManagedAccount(dir: "default", service: "Claude Code-credentials")
     var acc = await fetchManaged(fake, isDefault: true, force: force)
     acc.label = "C"
-    acc.email = "Claude Code 默认登录（只读）"
+    acc.email = L("Claude Code 默认登录（只读）", "Claude Code default sign-in (read-only)")
     acc.configDir = nil
     if let e = acc.error { return .err(e) }
     return .ok(acc)
@@ -380,15 +436,15 @@ func openLoginTerminal(configDir: String) {
     export CLAUDE_CONFIG_DIR='\(configDir)'
     export BROWSER='\(browserPath)'
     mkdir -p "$CLAUDE_CONFIG_DIR"
-    echo "AI UsageMaster：给菜单栏添加一个 Claude 账号"
-    echo "授权页会在 \(hasChrome ? "Chrome 无痕窗口" : "Safari") 里打开：在那里用你要添加的账号（邮箱）登录，然后点授权。"
-    echo "如果打开的是普通窗口、里面已经是别的账号：复制下面打印的链接，按 ⌘⇧N 开无痕窗口粘贴打开。"
+    echo "\(L("AI UsageMaster：给菜单栏添加一个 Claude 账号", "AI UsageMaster: add a Claude account to the menu bar"))"
+    echo "\(L("授权页会在 \(hasChrome ? "Chrome 无痕窗口" : "Safari") 里打开：在那里用你要添加的账号（邮箱）登录，然后点授权。", "The authorization page opens in \(hasChrome ? "a Chrome incognito window" : "Safari"). Sign in there with the account you want to add, then approve."))"
+    echo "\(L("如果打开的是普通窗口、里面已经是别的账号：复制下面打印的链接，按 ⌘⇧N 开无痕窗口粘贴打开。", "If it opened in a normal window that is already signed in to another account, copy the link printed below into a private window (⌘⇧N)."))"
     echo
     '\(claudeBin)' auth login --claudeai
     echo
     '\(claudeBin)' auth status --text
     echo
-    echo "完成。菜单栏 1 分钟内会显示这个账号（或在菜单里点「立即刷新」）。可以关闭此窗口。"
+    echo "\(L("完成。菜单栏 1 分钟内会显示这个账号（或在菜单里点「立即刷新」）。可以关闭此窗口。", "Done. The account shows up in the menu bar within a minute (or choose Refresh Now in the menu). You can close this window."))"
     """
     let path = tmp + "usagemaster-login-\(tag).command"
     do {

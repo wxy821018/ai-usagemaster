@@ -18,14 +18,18 @@
 
 ## 功能
 
-- **多个 Claude 账号**：每个账号显示 5 小时窗口、每周（全部模型）和按模型的每周额度，带进度条和重置倒计时。用到 75% 变橙，90% 变红。
-- **切换账号**：在菜单里点哪个账号，平时运行的 `claude` 就用哪个，不用重新登录。已经开着的会话大约 30 秒内跟着换。
+- **多个 Claude 账号**：每个账号显示 5 小时窗口、每周（全部模型）和按模型的每周额度，带进度条和重置倒计时。颜色按服务端给每个额度标的警示级别来（服务端没给时，75% 变橙、90% 变红）。菜单栏上显示的数字，是服务端标出的"当前卡住你的那一项"。
+- **账号的更多信息**：套餐（Max 20x、Max 5x、Team）、超额用量花了多少和每月上限、官方给这个账号的可用重置次数（只显示，不会自动领取）。
+- **"用得太快"提醒**：和 Claude Code 同一套规则：5 小时窗口用了 90% 而时间才过去 72% 以内，或者每周额度用了 75%/50% 而一周才过去 60%/35% 以内。同时显示按现在的速度什么时候用完。
+- **切换账号**：在菜单里点哪个账号，平时运行的 `claude` 就用哪个，不用重新登录。新开的会话马上就用新账号；已经开着的会话可能还在用原来的账号，退出重开就会换过去。
 - **两种切换方式**
   - 自动：用完就切（5 小时窗口或每周额度 ≥99%）；有余量的账号里，优先用每周额度最快作废的那个；5 小时窗口 5 分钟内就重置时先等一下；两次自动切换至少隔 15 分钟。自动模式下手动点选的账号，在它用完之前不会被换走。
   - 手动：点哪个用哪个，不会自动换。
 - **重置提醒**：额度在原定时间之前被提前重置、官方状态页出现和用量限制有关的公告、用量数据里出现新的额度项时，发系统通知。
 - **Cursor**：本期包含额度的花费、账单周期重置时间、团队共享额度。
-- **命令行**：`AIUsageMaster --print` 打印一次当前数据；`AIUsageMaster --selftest` 跑自动切换规则的自检。
+- **Claude Code 状态栏**（可选）：在菜单里勾上「在 Claude Code 状态栏显示用量」，Claude Code 底部会显示一行，比如 `Opus 5.5 │ $1.23 │ ● 个人 5h 20%↻00:20 周 12% │ 工作 5h 100%↻00:30`。你原来的状态栏命令照常执行，它在 0.3 秒内给出的输出排在前面。Claude Code 交给状态栏的实时用量也会被菜单栏直接用上，少查几次用量接口。每次改 `~/.claude/settings.json` 之前都会备份，关掉时原样还原。
+- **语言跟随系统**：macOS 首选语言是中文就显示中文，否则显示英文。
+- **命令行**：`AIUsageMaster --print` 打印一次当前数据；`AIUsageMaster --selftest` 跑自动切换规则的自检；`--install-statusline` / `--uninstall-statusline` 和菜单里那一项作用相同。
 
 ## 安装
 
@@ -56,6 +60,7 @@ open "$HOME/Applications/AI UsageMaster.app"
 | Claude 用量 | `GET https://api.anthropic.com/api/oauth/usage`，和 Claude Code 里 `/usage` 用的是同一个接口 |
 | Claude 令牌 | 每个账号的钥匙串条目 `Claude Code-credentials-<配置目录路径的 SHA-256 前 8 位>`，由 Claude Code 登录时写入 |
 | 令牌刷新 | 到期前 5 分钟向 `https://platform.claude.com/v1/oauth/token` 换新，用的是 Claude Code 的公开 OAuth client id |
+| 使用中的实时用量 | Claude Code 交给状态栏命令的 `rate_limits` 字段（只在开了状态栏时） |
 | 官方公告 | `https://status.claude.com/api/v2/incidents.json`（公开接口，不需要登录） |
 | Cursor 用量 | `https://api2.cursor.sh/aiserver.v1.DashboardService/GetCurrentPeriodUsage` 与 `GetPlanInfo`，令牌从 Cursor 本地的 `state.vscdb` 只读读取 |
 

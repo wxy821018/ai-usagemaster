@@ -16,14 +16,18 @@ I use several Claude accounts and I use them a lot, so one of them is always run
 
 ## Features
 
-- **Multiple Claude accounts.** For each account: the 5-hour window, the weekly limit (all models) and per-model weekly limits, with progress bars and reset countdowns. Turns orange at 75% and red at 90%.
-- **Switch accounts.** Click an account in the menu and the `claude` CLI uses it from then on. No new login needed. Sessions that are already open follow within about 30 seconds.
+- **Multiple Claude accounts.** For each account: the 5-hour window, the weekly limit (all models) and per-model weekly limits, with progress bars and reset countdowns. Colors follow the warning level the server reports for each limit (orange at 75% and red at 90% when it reports none). The menu bar number is the limit the server marks as the one currently holding you back.
+- **More detail per account.** Plan (Max 20x, Max 5x, Team), extra usage spent against its monthly cap, and any usage resets granted to the account (shown only, never redeemed).
+- **"Using it fast" warning.** Same rule Claude Code uses: 90% of the 5-hour window gone while 72% or less of the time has passed, or 75%/50% of the week gone with 60%/35% or less of the week passed. Shows when it runs out at the current pace.
+- **Switch accounts.** Click an account in the menu and the `claude` CLI uses it from then on. No new login needed. New sessions pick it up right away; a session that is already open may keep the previous account until you restart it.
 - **Two switching modes**
   - Automatic. Leaves an account once its 5-hour window or weekly limit reaches 99%. Among accounts with quota left, it prefers the one whose weekly quota is about to expire, so unused quota is not wasted. If the 5-hour window resets within 5 minutes it waits instead. At least 15 minutes between automatic switches. An account you pick by hand stays until it runs out.
   - Manual. You pick, it never switches on its own.
 - **Reset alerts.** A system notification when a limit resets earlier than scheduled, when the Claude status page posts something about usage limits, or when a new quota item shows up in the usage data.
 - **Cursor.** Spend against the included amount for the current billing period, the reset date, and team pooled usage.
-- **Command line.** `AIUsageMaster --print` prints the current numbers once. `AIUsageMaster --selftest` runs the self-checks for the switching rules.
+- **Claude Code status line.** Optional. Turn on "Show Usage in Claude Code Status Line" in the menu and Claude Code shows a line like `Opus 5.5 │ $1.23 │ ● Personal 5h 20%↻00:20 wk 12% │ Work 5h 100%↻00:30`. Your existing status line command keeps running, and its output comes first when it answers within 0.3 seconds. The live numbers Claude Code hands to the status line also feed the menu bar, so fewer usage requests are needed. `~/.claude/settings.json` is backed up before every change, and turning it off restores what was there.
+- **Follows your system language.** Chinese when macOS's preferred language is Chinese, English otherwise.
+- **Command line.** `AIUsageMaster --print` prints the current numbers once. `AIUsageMaster --selftest` runs the self-checks for the switching rules. `--install-statusline` and `--uninstall-statusline` do the same as the menu item.
 
 ## Install
 
@@ -41,7 +45,7 @@ To stop starting at login: `launchctl bootout gui/$(id -u)/io.github.wxy821018.u
 
 ## Adding accounts
 
-Choose **Add Claude account…** in the menu (the menu text is currently in Chinese: 「添加 Claude 账号…」). A Terminal window runs the official `claude auth login` against a dedicated config directory, `~/.config/usagemaster/claude/<name>/`. The sign-in page opens in a Chrome incognito window, so an account that is already signed in to your browser does not get in the way of adding a different one.
+Choose **Add Claude Account…** in the menu. A Terminal window runs the official `claude auth login` against a dedicated config directory, `~/.config/usagemaster/claude/<name>/`. The sign-in page opens in a Chrome incognito window, so an account that is already signed in to your browser does not get in the way of adding a different one.
 
 - Adding the same account twice keeps the first copy and removes the duplicate.
 - To change the name shown in the menu, put a `label` file in the account directory, for example `echo Work > ~/.config/usagemaster/claude/acct-xxx/label`.
@@ -54,6 +58,7 @@ Choose **Add Claude account…** in the menu (the menu text is currently in Chin
 | Claude usage | `GET https://api.anthropic.com/api/oauth/usage`, the same endpoint Claude Code's `/usage` uses |
 | Claude tokens | One Keychain item per account, `Claude Code-credentials-<first 8 hex of SHA-256 of the config dir path>`, written by Claude Code at sign-in |
 | Token refresh | Five minutes before expiry, via `https://platform.claude.com/v1/oauth/token` with Claude Code's public OAuth client id |
+| Live usage while you work | The `rate_limits` field Claude Code passes to its status line command (only when the status line is turned on) |
 | Status notices | `https://status.claude.com/api/v2/incidents.json` (public, no sign-in) |
 | Cursor usage | `GetCurrentPeriodUsage` and `GetPlanInfo` on `https://api2.cursor.sh/aiserver.v1.DashboardService`, with the token read (read-only) from Cursor's local `state.vscdb` |
 
@@ -70,14 +75,12 @@ Choose **Add Claude account…** in the menu (the menu text is currently in Chin
 - A personal project, not affiliated with Anthropic or Cursor. The endpoints it uses are not publicly documented and may change at any time.
 - macOS only for now. On Windows, Claude Code keeps credentials in `%USERPROFILE%\.claude\.credentials.json` (or in the `CLAUDE_CONFIG_DIR` directory when that is set), and Cursor keeps its database at `%APPDATA%\Cursor\User\globalStorage\state.vscdb`. Ports are welcome; see [docs/WINDOWS.md](docs/WINDOWS.md) for what has been verified so far.
 - Automatic switching only covers accounts added through AI UsageMaster.
-- The menu is in Chinese for now; an English UI is planned.
 
 ## Roadmap
 
 - Add accounts for other AI services the same way as Claude: Codex, Gemini, Kimi, Grok, ZCode, OpenCode Go, MiniMax (in progress)
 - Usage history and burn-rate forecasts ("at this pace the 5-hour window runs out in about 1 h 40 min")
 - Token, API-equivalent cost and per-project statistics from local Claude Code logs, compared against what the subscriptions cost
-- A Claude Code status line plugin and a command line interface
 - Windows version
 
 ## Acknowledgements

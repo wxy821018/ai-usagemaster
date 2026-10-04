@@ -15,7 +15,8 @@ func effective(_ w: UsageWindow, _ now: Date) -> (pct: Double, reset: Bool) {
 }
 
 func bindingWindow(_ a: ClaudeAccount, _ now: Date) -> UsageWindow? {
-    a.windows.max(by: { effective($0, now).pct < effective($1, now).pct })
+    if let w = a.windows.first(where: { $0.isActive && !effective($0, now).reset }) { return w }   // 服务端标出的那一行
+    return a.windows.max(by: { effective($0, now).pct < effective($1, now).pct })
 }
 
 @MainActor
@@ -58,7 +59,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func applicationDidFinishLaunching(_ n: Notification) {
         migrateLegacyAccounts()
         item.autosaveName = "UsageMaster"
-        item.button?.title = "用量…"
+        item.button?.title = L("用量…", "Usage…")
         menu.delegate = self
         menu.autoenablesItems = false
         item.menu = menu
@@ -121,6 +122,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         renderTitle()
     }
 
+    func color(_ w: UsageWindow) -> NSColor {
+        switch severityLevel(w) { case 2: return .systemRed; case 1: return .systemOrange; default: return .labelColor }
+    }
+
     func color(_ pct: Double) -> NSColor {
         pct >= 90 ? .systemRed : (pct >= 75 ? .systemOrange : .labelColor)
     }
@@ -140,8 +145,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 add("\(a.active && accounts.count > 1 ? "●" : "")\(a.label) ", claudeStale ? .secondaryLabelColor : .labelColor)
                 if let w = bindingWindow(a, now) {
                     let (pct, _) = effective(w, now)
-                    add("\(Int(pct.rounded()))%", claudeStale ? .secondaryLabelColor : color(pct))
-                    if w.label.hasPrefix("每周") && pct > 0 { add("w") }
+                    add("\(Int(pct.rounded()))%", claudeStale ? .secondaryLabelColor : color(w))
+                    if isWeeklyWindow(w) && pct > 0 { add("w") }
                     if (a.active || accounts.count == 1 || pct >= 50), !claudeStale {
                         let cd = shortCountdown(w.resetsAt, now: now)
                         if !cd.isEmpty && pct > 0 { add("·\(cd)") }
@@ -180,35 +185,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         for n in notices {
             let mi = NSMenuItem(title: "", action: #selector(openNotice(_:)), keyEquivalent: "")
             let when = n.date.map { clockFmt.string(from: $0) } ?? ""
-            mi.attributedTitle = NSAttributedString(string: "📢 官方公告 \(when)：\(n.title)", attributes: [
+            mi.attributedTitle = NSAttributedString(string: L("📢 官方公告 \(when)：\(n.title)", "📢 Official notice \(when): \(n.title)"), attributes: [
                 .font: NSFont.systemFont(ofSize: 12), .foregroundColor: NSColor.systemBlue])
             mi.target = self
             mi.representedObject = n.url
             menu.addItem(mi)
         }
         if !removedDuplicates.isEmpty {
-            line("  已自动移除重复添加的账号：\(removedDuplicates.joined(separator: "、"))", .secondaryLabelColor, small: true)
+            line(L("  已自动移除重复添加的账号：", "  Removed duplicate accounts: ") + removedDuplicates.joined(separator: listSep), .secondaryLabelColor, small: true)
         }
         if let note = switchNote { line("  \(note)", .secondaryLabelColor, small: true) }
         if let e = claudeErr {
             header("Claude")
-            line("  ⚠︎ 最近一次刷新失败：\(e)\(claude == nil ? "" : "（下面是 \(ago(claudeOKAt, now: now)) 的数据）")", .systemOrange)
+            line(L("  ⚠︎ 最近一次刷新失败：", "  ⚠︎ Last refresh failed: ") + e + (claude == nil ? "" : staleSuffix(claudeOKAt, now)), .systemOrange)
         }
         if let accounts = claude {
             for (i, a) in accounts.enumerated() {
                 if i > 0 || claudeErr != nil { menu.addItem(.separator()) }
                 let hi = NSMenuItem(title: "", action: a.active ? nil : #selector(switchTo(_:)), keyEquivalent: "")
-                let ht = a.active ? "● Claude · \(a.label)  \(a.email)   使用中" : "○ Claude · \(a.label)  \(a.email)   点此切换"
+                let ht = a.active ? "● Claude · \(a.label)  \(a.email)   " + L("使用中", "in use") : "○ Claude · \(a.label)  \(a.email)   " + L("点此切换", "click to switch")
                 hi.attributedTitle = NSAttributedString(string: ht, attributes: [.font: NSFont.boldSystemFont(ofSize: 13)])
                 hi.target = self
                 hi.representedObject = a.configDir
                 hi.isEnabled = !a.active && a.configDir != nil
                 menu.addItem(hi)
-                if !a.org.isEmpty { line("  \(a.org)", small: true) }
+                if !a.org.isEmpty || a.plan != nil { line("  " + [a.org, a.plan ?? ""].filter { !$0.isEmpty }.joined(separator: " · "), small: true) }
+                for n in a.notes { line("  \(n)", small: true) }
                 if let e = a.error { line("  ⚠︎ \(e)", .systemOrange) }
-                if let w = a.warning, a.error == nil { line("  ⚠︎ \(w)（下面是 \(ago(a.updatedAt, now: now)) 的数据）", .secondaryLabelColor, small: true) }
+                if let w = a.warning, a.error == nil { line("  ⚠︎ \(w)" + staleSuffix(a.updatedAt, now), .secondaryLabelColor, small: true) }
                 if a.needsLogin, let dir = a.configDir {
-                    let mi = NSMenuItem(title: "  重新登录 \(a.label)…", action: #selector(relogin(_:)), keyEquivalent: "")
+                    let mi = NSMenuItem(title: L("  重新登录 \(a.label)…", "  Sign in to \(a.label) again…"), action: #selector(relogin(_:)), keyEquivalent: "")
                     mi.target = self
                     mi.representedObject = dir
                     menu.addItem(mi)
@@ -216,62 +222,72 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 for w in a.windows {
                     let (pct, reset) = effective(w, now)
                     let when = w.resetsAt.map { clockFmt.string(from: $0) } ?? "—"
-                    let tail = w.resetsAt == nil ? "未开始计时" : (reset ? "\(when) 已重置（等新数据）" : "\(when) 重置（还有 \(countdown(w.resetsAt, now: now))）")
+                    let tail = w.resetsAt == nil ? L("未开始计时", "not started") : (reset ? L("\(when) 已重置（等新数据）", "reset at \(when) (waiting for new data)") : L("\(when) 重置（还有 \(countdown(w.resetsAt, now: now))）", "resets \(when) (in \(countdown(w.resetsAt, now: now)))"))
                     line("  \(w.label)", .labelColor)
-                    line("    \(bar(pct)) \(Int(pct.rounded()))%   \(tail)", color(pct))
+                    line("    \(bar(pct)) \(Int(pct.rounded()))%   \(tail)", reset ? .labelColor : color(w))
+                    if let pw = paceWarning(w, now: now) { line("    ⚡ \(pw.text)", .systemOrange, small: true) }
                 }
-                let src = "  数据：\(ago(a.updatedAt, now: now))"
+                let src = L("  数据：\(ago(a.updatedAt, now: now))", "  Data: \(ago(a.updatedAt, now: now))")
                 line(src, small: true)
             }
         } else if claudeErr == nil {
             header("Claude")
-            line("  读取中…")
+            line(L("  读取中…", "  Loading…"))
         }
 
         menu.addItem(.separator())
         header("Cursor\(cursor?.plan.map { " · \($0)" } ?? "")")
         if let e = cursorErr {
-            line("  ⚠︎ 最近一次刷新失败：\(e)\(cursor == nil ? "" : "（下面是 \(ago(cursorOKAt, now: now)) 的数据）")", .systemOrange)
+            line(L("  ⚠︎ 最近一次刷新失败：", "  ⚠︎ Last refresh failed: ") + e + (cursor == nil ? "" : staleSuffix(cursorOKAt, now)), .systemOrange)
         }
         if let u = cursor {
             if let used = u.usedCents, let limit = u.limitCents {
-                line("  本期包含额度：\(dollars(used)) / \(dollars(limit))")
+                line(L("  本期包含额度：\(dollars(used)) / \(dollars(limit))", "  Included this cycle: \(dollars(used)) / \(dollars(limit))"))
             }
             line("    \(bar(u.percent)) \(Int(u.percent.rounded()))%", color(u.percent))
             let when = u.cycleEnd.map { clockFmt.string(from: $0) } ?? "—"
-            line("  账单周期 \(when) 重置（还有 \(countdown(u.cycleEnd, now: now))）")
+            line(L("  账单周期 \(when) 重置（还有 \(countdown(u.cycleEnd, now: now))）", "  Billing cycle resets \(when) (in \(countdown(u.cycleEnd, now: now)))"))
             if let pooled = u.pooled { line("  \(pooled)") }
-            if u.source != "直连" { line("  数据：\(u.source)", small: true) }
+            if u.source != "direct" { line(L("  数据：", "  Data: ") + u.source, small: true) }
         } else if cursorErr == nil {
-            line("  读取中…")
+            line(L("  读取中…", "  Loading…"))
         }
 
         menu.addItem(.separator())
         let last = [claudeOKAt, cursorOKAt].compactMap { $0 }.max()
-        let status = fetching ? "刷新中…" : (last.map { "更新于 \(clockFmt.string(from: $0))" } ?? "尚未更新")
+        let status = fetching ? L("刷新中…", "Refreshing…") : (last.map { L("更新于 ", "Updated ") + clockFmt.string(from: $0) } ?? L("尚未更新", "Not updated yet"))
         let upd = NSMenuItem(title: status, action: nil, keyEquivalent: "")
         upd.isEnabled = false
         menu.addItem(upd)
-        let r = NSMenuItem(title: "立即刷新", action: #selector(refreshNow), keyEquivalent: "r")
+        let r = NSMenuItem(title: L("立即刷新", "Refresh Now"), action: #selector(refreshNow), keyEquivalent: "r")
         r.target = self
         r.isEnabled = !fetching
         menu.addItem(r)
-        let modeHeader = NSMenuItem(title: "Claude 账号切换方式", action: nil, keyEquivalent: "")
+        let modeHeader = NSMenuItem(title: L("Claude 账号切换方式", "Claude account switching"), action: nil, keyEquivalent: "")
         modeHeader.isEnabled = false
         menu.addItem(modeHeader)
-        let au = NSMenuItem(title: "  自动：用完就切，先用快重置的", action: #selector(setAutoMode), keyEquivalent: "")
+        let au = NSMenuItem(title: L("  自动：用完就切，先用快重置的", "  Automatic: switch when one runs out, use the soonest-expiring first"), action: #selector(setAutoMode), keyEquivalent: "")
         au.target = self
         au.state = autoSwitch ? .on : .off
         menu.addItem(au)
-        let ma = NSMenuItem(title: "  手动：点哪个账号就用哪个", action: #selector(setManualMode), keyEquivalent: "")
+        let ma = NSMenuItem(title: L("  手动：点哪个账号就用哪个", "  Manual: use whichever account you click"), action: #selector(setManualMode), keyEquivalent: "")
         ma.target = self
         ma.state = autoSwitch ? .off : .on
         menu.addItem(ma)
-        menu.addItem(withTitle: "添加 Claude 账号…", action: #selector(addAccount), keyEquivalent: "").target = self
-        menu.addItem(withTitle: "打开 Claude 用量页", action: #selector(openClaude), keyEquivalent: "").target = self
-        menu.addItem(withTitle: "打开 Cursor 用量页", action: #selector(openCursor), keyEquivalent: "").target = self
+        menu.addItem(withTitle: L("添加 Claude 账号…", "Add Claude Account…"), action: #selector(addAccount), keyEquivalent: "").target = self
+        let sl = NSMenuItem(title: L("在 Claude Code 状态栏显示用量", "Show Usage in Claude Code Status Line"), action: #selector(toggleStatusLine), keyEquivalent: "")
+        sl.target = self
+        sl.state = statusLineInstalled() ? .on : .off
+        menu.addItem(sl)
+        menu.addItem(withTitle: L("打开 Claude 用量页", "Open Claude Usage Page"), action: #selector(openClaude), keyEquivalent: "").target = self
+        menu.addItem(withTitle: L("打开 Cursor 用量页", "Open Cursor Usage Page"), action: #selector(openCursor), keyEquivalent: "").target = self
         menu.addItem(.separator())
-        menu.addItem(withTitle: "退出", action: #selector(quit), keyEquivalent: "q").target = self
+        menu.addItem(withTitle: L("退出", "Quit"), action: #selector(quit), keyEquivalent: "q").target = self
+    }
+
+    /// "（下面是 5 分钟前的数据）"
+    func staleSuffix(_ d: Date?, _ now: Date) -> String {
+        L("（下面是 \(ago(d, now: now)) 的数据）", " (showing data from \(ago(d, now: now)))")
     }
 
     @objc func refreshNow() { refresh(force: true); checkNotices() }
@@ -285,7 +301,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self.notices = found
             var done = self.notifiedNoticeIds
             for n in found where !done.contains(n.id) {
-                self.notify("Claude 官方公告（可能涉及额度重置）", n.title)
+                self.notify(L("Claude 官方公告（可能涉及额度重置）", "Claude status notice (may involve a usage reset)"), n.title)
                 done.insert(n.id)
             }
             self.notifiedNoticeIds = done
@@ -297,15 +313,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard let accounts = claude, claudeErr == nil else { return }
         let (events, seen) = detectEarlyResets(previous: lastSeen, accounts: accounts, now: Date())
         lastSeen = seen
-        for ev in events { notify("AI UsageMaster：额度提前重置", ev); switchNote = ev }
+        for ev in events { notify(L("AI UsageMaster：额度提前重置", "AI UsageMaster: usage reset early"), ev); switchNote = ev }
         // 用量返回里第一次出现新的额度项（官方活动 / 临时额度 / 重置额度的信号）
         for a in accounts where a.error == nil {
             let now = Set(a.extraKeys)
             if let before = lastExtraKeys[a.email] {
                 let added = now.subtracting(before)
                 if !added.isEmpty {
-                    let msg = "\(a.label) 的用量数据里出现新的额度项：\(added.sorted().joined(separator: "、"))（可能是官方活动或重置）"
-                    notify("AI UsageMaster：Claude 额度有变化", msg)
+                    let items = added.sorted().joined(separator: listSep)
+                    let msg = L("\(a.label) 的用量数据里出现新的额度项：\(items)（可能是官方活动或重置）", "New quota items in \(a.label)'s usage data: \(items) (possibly a promotion or a reset)")
+                    notify(L("AI UsageMaster：Claude 额度有变化", "AI UsageMaster: Claude quota changed"), msg)
                     switchNote = msg
                 }
             }
@@ -319,10 +336,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard let x = all.first(where: { $0.dir == dir }) else { return }
         lastAutoSwitch = Date()
         if let err = switchDefault(to: x, all: all) {
-            switchNote = "自动切换失败：\(err)"
+            switchNote = L("自动切换失败：\(err)", "Automatic switch failed: \(err)")
         } else {
-            switchNote = "自动切换：\(d.reason)（\(clockFmt.string(from: Date()))）"
-            notify("AI UsageMaster 已切换 Claude 账号", d.reason)
+            switchNote = L("自动切换：\(d.reason)（\(clockFmt.string(from: Date()))）", "Automatic switch: \(d.reason) (\(clockFmt.string(from: Date())))")
+            notify(L("AI UsageMaster 已切换 Claude 账号", "AI UsageMaster switched Claude accounts"), d.reason)
             refresh()
         }
     }
@@ -334,22 +351,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc func setAutoMode() {
         autoSwitch = true; pinnedDir = nil; lastAutoSwitch = .distantPast
-        switchNote = "切换方式：自动"
+        switchNote = L("切换方式：自动", "Switching: automatic")
         maybeAutoSwitch()
     }
-    @objc func setManualMode() { autoSwitch = false; pinnedDir = nil; switchNote = "切换方式：手动（不会自动换账号）" }
+    @objc func setManualMode() { autoSwitch = false; pinnedDir = nil; switchNote = L("切换方式：手动（不会自动换账号）", "Switching: manual (never switches on its own)") }
     @objc func switchTo(_ sender: NSMenuItem) {
         guard let dir = sender.representedObject as? String else { return }
         let all = listManagedAccounts()
         guard let x = all.first(where: { $0.dir == dir }) else { return }
         if let err = switchDefault(to: x, all: all) {
-            switchNote = "切换失败：\(err)"
+            switchNote = L("切换失败：\(err)", "Switch failed: \(err)")
         } else {
             if autoSwitch { pinnedDir = x.dir }
-            switchNote = "已切换到 \(x.email ?? "")：新开的 claude 会话直接用它；已经开着的会话在 30 秒内跟着换"
-                + (autoSwitch ? "。自动模式：它用完前不会被自动换走" : "")
+            let who = x.email ?? ""
+            switchNote = L("已切换到 \(who)：新开的 claude 会话会用它；已经开着的会话可能还在用原来的账号，退出重开就会换过去",
+                           "Switched to \(who). New claude sessions use it; sessions that are already open may keep the previous account until you restart them")
+                + (autoSwitch ? L("。自动模式：它用完前不会被自动换走", ". Automatic mode: it stays until it runs out") : "")
         }
         refresh()
+    }
+    @objc func toggleStatusLine() {
+        switchNote = statusLineInstalled() ? uninstallStatusLine() : installStatusLine()
     }
     @objc func addAccount() {
         let name = "acct-" + String(Int(Date().timeIntervalSince1970))

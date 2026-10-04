@@ -5,6 +5,21 @@ import CryptoKit
 import Foundation
 import SQLite3
 
+// MARK: - 界面语言
+
+/// 界面语言跟随系统：系统首选语言是中文就显示中文，否则显示英文。
+/// 环境变量 AIUM_LANG=zh / en 可临时指定（自检、截图用）。
+let isChinese: Bool = {
+    if let o = ProcessInfo.processInfo.environment["AIUM_LANG"], !o.isEmpty { return o.lowercased().hasPrefix("zh") }
+    return (Locale.preferredLanguages.first ?? "en").lowercased().hasPrefix("zh")
+}()
+
+/// 双语文案：L("中文", "English")
+func L(_ zh: String, _ en: String) -> String { isChinese ? zh : en }
+
+/// 中文用顿号，英文用逗号
+var listSep: String { L("、", ", ") }
+
 // MARK: - 数据模型
 
 struct UsageWindow {
@@ -12,6 +27,10 @@ struct UsageWindow {
     let percent: Double        // 0–100（已按"重置时间已过 → 视为 0"修正）
     let resetsAt: Date?
     let wasReset: Bool         // 数据里的重置时间已经过了
+    var kind: String? = nil    // 服务端 limits[].kind：session / weekly_all / weekly_scoped（按它分类，不看标签文字）
+    var severity: String? = nil // 服务端判定的严重程度：normal / warning / critical（颜色直接用它）
+    var isActive: Bool = false // 服务端标出的"当前卡住你的那一行"
+    var scope: String? = nil   // weekly_scoped 的范围名（模型名，如 Fable）
 }
 
 struct ClaudeAccount {
@@ -21,12 +40,14 @@ struct ClaudeAccount {
     var active: Bool
     var windows: [UsageWindow] = []
     var updatedAt: Date?
-    var source: String         // "直连"
+    var source: String         // "direct" / "statusline"
     var error: String?
     var configDir: String? = nil
     var needsLogin = false
     var extraKeys: [String] = []     // 用量返回里非空的额外额度项（官方活动/临时额度的信号）
     var warning: String? = nil       // 暂时性问题（被限流、网络断）：数字来自上次成功的缓存，仍可用
+    var notes: [String] = []         // 额外信息：超额用量、可用重置次数等（只读展示）
+    var plan: String? = nil          // 套餐：Max 20x / Max 5x / Team / Pro
 
     /// 最紧的那个窗口（用来在菜单栏上显示）
     var binding: UsageWindow? { windows.max(by: { $0.percent < $1.percent }) }
@@ -39,7 +60,7 @@ struct CursorUsage {
     var percent: Double = 0
     var cycleEnd: Date?
     var pooled: String?
-    var source: String = "直连"
+    var source: String = "direct"
 }
 
 enum Fetch<T> {
@@ -59,16 +80,16 @@ let session: URLSession = {
     return URLSession(configuration: c, delegate: NoRedirect.shared, delegateQueue: nil)
 }()
 
-/// 把常见网络错误翻成简短中文
+/// 把常见网络错误翻成简短的说明
 func describe(_ error: Error) -> String {
     let ns = error as NSError
     if ns.domain == NSURLErrorDomain {
         switch ns.code {
-        case NSURLErrorNotConnectedToInternet: return "没联网"
-        case NSURLErrorTimedOut: return "请求超时"
-        case NSURLErrorNetworkConnectionLost: return "网络连接中断"
-        case NSURLErrorCannotFindHost, NSURLErrorDNSLookupFailed: return "域名解析失败"
-        default: return "网络错误（\(ns.code)）"
+        case NSURLErrorNotConnectedToInternet: return L("没联网", "No internet connection")
+        case NSURLErrorTimedOut: return L("请求超时", "Request timed out")
+        case NSURLErrorNetworkConnectionLost: return L("网络连接中断", "Network connection lost")
+        case NSURLErrorCannotFindHost, NSURLErrorDNSLookupFailed: return L("域名解析失败", "DNS lookup failed")
+        default: return L("网络错误（\(ns.code)）", "Network error (\(ns.code))")
         }
     }
     return ns.localizedDescription
@@ -109,11 +130,11 @@ func roundedMinute(_ d: Date?) -> Date? {
 func countdown(_ d: Date?, now: Date = Date()) -> String {
     guard let d = d else { return "—" }
     let s = Int(d.timeIntervalSince(now))
-    if s <= 0 { return "已到" }
+    if s <= 0 { return L("已到", "now") }
     let days = s / 86400, h = (s % 86400) / 3600, m = (s % 3600) / 60
-    if days > 0 { return "\(days)天\(h)小时" }
-    if h > 0 { return "\(h)小时\(m)分" }
-    return "\(max(m, 1))分"
+    if days > 0 { return L("\(days)天\(h)小时", "\(days)d \(h)h") }
+    if h > 0 { return L("\(h)小时\(m)分", "\(h)h \(m)m") }
+    return L("\(max(m, 1))分", "\(max(m, 1))m")
 }
 
 func shortCountdown(_ d: Date?, now: Date = Date()) -> String {
@@ -127,17 +148,17 @@ func shortCountdown(_ d: Date?, now: Date = Date()) -> String {
 }
 
 func ago(_ d: Date?, now: Date = Date()) -> String {
-    guard let d = d else { return "时间未知" }
+    guard let d = d else { return L("时间未知", "unknown time") }
     let s = Int(now.timeIntervalSince(d))
-    if s < 90 { return "刚刚" }
-    if s < 3600 { return "\(s / 60) 分钟前" }
-    if s < 86400 { return "\(s / 3600) 小时前" }
-    return "\(s / 86400) 天前"
+    if s < 90 { return L("刚刚", "just now") }
+    if s < 3600 { return L("\(s / 60) 分钟前", "\(s / 60) min ago") }
+    if s < 86400 { return L("\(s / 3600) 小时前", "\(s / 3600) h ago") }
+    return L("\(s / 86400) 天前", "\(s / 86400) days ago")
 }
 
 let clockFmt: DateFormatter = {
     let f = DateFormatter()
-    f.locale = Locale(identifier: "zh_CN")
+    f.locale = Locale(identifier: "en_US_POSIX")
     f.dateFormat = "M/d HH:mm"
     return f
 }()
@@ -163,10 +184,56 @@ func accountLabel(dir: String?, email: String) -> String {
     return shortLabel(email: email)
 }
 
-func makeWindow(_ label: String, percent: Double, resetsAt: Date?, now: Date = Date()) -> UsageWindow {
+func makeWindow(_ label: String, percent: Double, resetsAt: Date?, now: Date = Date(),
+                kind: String? = nil, severity: String? = nil, isActive: Bool = false, scope: String? = nil) -> UsageWindow {
     let r = roundedMinute(resetsAt)
-    if let r = r, r < now { return UsageWindow(label: label, percent: 0, resetsAt: r, wasReset: true) }
-    return UsageWindow(label: label, percent: percent, resetsAt: r, wasReset: false)
+    if let r = r, r < now { return UsageWindow(label: label, percent: 0, resetsAt: r, wasReset: true, kind: kind, scope: scope) }
+    return UsageWindow(label: label, percent: percent, resetsAt: r, wasReset: false, kind: kind, severity: severity, isActive: isActive, scope: scope)
+}
+
+/// 窗口显示名：按服务端的 kind 生成，跟随界面语言
+func windowLabel(kind: String?, scope: String? = nil, fallback: String = "") -> String {
+    switch kind {
+    case "session": return L("5 小时窗口", "5-hour window")
+    case "weekly_all": return L("每周（全部模型）", "Weekly (all models)")
+    case "weekly_scoped": return L("每周（\(scope ?? "指定范围")）", "Weekly (\(scope ?? "scoped"))")
+    default: return fallback.isEmpty ? (kind ?? "") : fallback
+    }
+}
+
+/// 判断窗口类型一律看 kind；旧缓存里没有 kind 时才按旧的中文标签判断
+func isSessionWindow(_ w: UsageWindow) -> Bool { w.kind == "session" || (w.kind == nil && w.label.hasPrefix("5")) }
+func isWeeklyAllWindow(_ w: UsageWindow) -> Bool { w.kind == "weekly_all" || (w.kind == nil && w.label == "每周（全部模型）") }
+func isWeeklyWindow(_ w: UsageWindow) -> Bool { !isSessionWindow(w) }
+
+/// 窗口总长度（算"已过去多少时间"用）
+func windowLength(_ w: UsageWindow) -> TimeInterval { isSessionWindow(w) ? 5 * 3600 : 7 * 86400 }
+
+/// "用得太快"：照 Claude Code 的规则——5 小时窗口用了 ≥90% 而时间才过去 ≤72%；
+/// 每周窗口 (≥75%, ≤60%) 或 (≥50%, ≤35%)。返回提示文字与按当前速度用完的时间
+func paceWarning(_ w: UsageWindow, now: Date = Date()) -> (text: String, exhaustAt: Date?)? {
+    guard !w.wasReset, let r = w.resetsAt, r > now, w.percent > 0, w.percent < 99 else { return nil }
+    let len = windowLength(w)
+    let elapsed = max(0.0, min(1.0, 1 - r.timeIntervalSince(now) / len))
+    guard elapsed > 0.01 else { return nil }
+    let fast: Bool
+    if len < 86400 { fast = w.percent >= 90 && elapsed <= 0.72 }
+    else { fast = (w.percent >= 75 && elapsed <= 0.60) || (w.percent >= 50 && elapsed <= 0.35) }
+    guard fast else { return nil }
+    let ratePerSec = w.percent / (elapsed * len)                      // 平均速度
+    let exhaust = now.addingTimeInterval((100 - w.percent) / ratePerSec)
+    let at = exhaust < r ? exhaust : nil
+    let text = L("用得太快：已用 \(Int(w.percent))%，时间才过去 \(Int(elapsed * 100))%", "Using it fast: \(Int(w.percent))% used with \(Int(elapsed * 100))% of the time gone")
+        + (at.map { L("，按这个速度约 \(countdown($0, now: now))后用完", ", runs out in about \(countdown($0, now: now)) at this pace") } ?? "")
+    return (text, at)
+}
+
+/// 颜色：优先用服务端判定的 severity，没有时退回 75% / 90% 阈值
+func severityLevel(_ w: UsageWindow) -> Int {
+    if !w.wasReset, let s = w.severity {
+        switch s { case "critical": return 2; case "warning": return 1; default: return 0 }
+    }
+    return w.percent >= 90 ? 2 : (w.percent >= 75 ? 1 : 0)
 }
 
 /// 跑一个命令，带超时；返回 stdout。不经过 shell，不把参数暴露给日志。

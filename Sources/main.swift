@@ -21,35 +21,41 @@ import CryptoKit
 import Foundation
 import SQLite3
 
+// Claude Code 状态栏：AIUsageMaster --statusline（由 Claude Code 调用，要快）
+if CommandLine.arguments.contains("--statusline") { runStatusLine(); exit(0) }
+if CommandLine.arguments.contains("--install-statusline") { print(installStatusLine()); exit(0) }
+if CommandLine.arguments.contains("--uninstall-statusline") { print(uninstallStatusLine()); exit(0) }
+
 if CommandLine.arguments.contains("--selftest") {
     let now = Date()
+    let pinnedCase = L("当前是手动选的", "Current was picked by hand")
     func acc(_ label: String, active: Bool, s: Double, w: Double, wResetH: Double, err: String? = nil) -> ClaudeAccount {
         var a = ClaudeAccount(label: label, email: label + "@x", org: "", active: active, source: "test", configDir: "/tmp/" + label)
-        a.windows = [UsageWindow(label: "5 小时窗口", percent: s, resetsAt: now.addingTimeInterval(3600), wasReset: false),
-                     UsageWindow(label: "每周（全部模型）", percent: w, resetsAt: now.addingTimeInterval(wResetH * 3600), wasReset: false)]
+        a.windows = [UsageWindow(label: windowLabel(kind: "session"), percent: s, resetsAt: now.addingTimeInterval(3600), wasReset: false, kind: "session"),
+                     UsageWindow(label: windowLabel(kind: "weekly_all"), percent: w, resetsAt: now.addingTimeInterval(wResetH * 3600), wasReset: false, kind: "weekly_all")]
         a.error = err
         return a
     }
     func accS(_ label: String, active: Bool, s: Double, sResetMin: Double, w: Double, wResetH: Double) -> ClaudeAccount {
         var a = acc(label, active: active, s: s, w: w, wResetH: wResetH)
-        a.windows[0] = UsageWindow(label: "5 小时窗口", percent: s, resetsAt: now.addingTimeInterval(sResetMin * 60), wasReset: false)
+        a.windows[0] = UsageWindow(label: windowLabel(kind: "session"), percent: s, resetsAt: now.addingTimeInterval(sResetMin * 60), wasReset: false, kind: "session")
         return a
     }
     let cases: [(String, [ClaudeAccount], String?)] = [
-        ("当前 5 小时用完 → 切到最该先用的", [acc("A", active: true, s: 99.5, w: 40, wResetH: 100), acc("B", active: false, s: 10, w: 20, wResetH: 48), acc("C", active: false, s: 0, w: 0, wResetH: 120)], "/tmp/B"),
-        ("当前 5 小时 98%、每周 98% → 还不算用完，且没有更该先用的 → 不切", [acc("A", active: true, s: 98, w: 98, wResetH: 20), acc("B", active: false, s: 0, w: 10, wResetH: 140)], nil),
-        ("当前账号数据取不到（被限流）→ 不切", [acc("A", active: true, s: 0, w: 0, wResetH: 100, err: "被限流（429）"), acc("B", active: false, s: 0, w: 10, wResetH: 24)], nil),
-        ("当前每周用完 → 切", [acc("A", active: true, s: 10, w: 99, wResetH: 100), acc("B", active: false, s: 0, w: 50, wResetH: 140)], "/tmp/B"),
-        ("当前能用，B 早 5 天重置且有余量 → 先用 B", [acc("A", active: true, s: 10, w: 50, wResetH: 144), acc("B", active: false, s: 0, w: 30, wResetH: 24)], "/tmp/B"),
-        ("当前能用，B 只早 6 小时 → 不切", [acc("A", active: true, s: 10, w: 50, wResetH: 30), acc("B", active: false, s: 0, w: 30, wResetH: 24)], nil),
-        ("当前能用，B 早但只剩 5% → 不切", [acc("A", active: true, s: 10, w: 50, wResetH: 144), acc("B", active: false, s: 0, w: 95, wResetH: 24)], nil),
-        ("当前用完，其他也都用完 → 不切", [acc("A", active: true, s: 100, w: 50, wResetH: 144), acc("B", active: false, s: 100, w: 10, wResetH: 24), acc("C", active: false, s: 0, w: 100, wResetH: 24)], nil),
-        ("候选有报错 → 不选它", [acc("A", active: true, s: 100, w: 50, wResetH: 144), acc("B", active: false, s: 0, w: 10, wResetH: 24, err: "需要重新登录")], nil),
-        ("当前 5 小时满但 3 分钟后重置 → 先等", [accS("A", active: true, s: 100, sResetMin: 3, w: 50, wResetH: 144), acc("B", active: false, s: 0, w: 10, wResetH: 24)], nil),
-        ("当前 5 小时满、40 分钟后才重置 → 切", [accS("A", active: true, s: 100, sResetMin: 40, w: 50, wResetH: 144), acc("B", active: false, s: 0, w: 10, wResetH: 24)], "/tmp/B"),
-        ("两个候选：B 剩 60% 两天后重置，C 剩 90% 六天后 → 选 B（作废更快）", [acc("A", active: true, s: 99, w: 50, wResetH: 100), acc("B", active: false, s: 0, w: 40, wResetH: 48), acc("C", active: false, s: 0, w: 10, wResetH: 144)], "/tmp/B"),
-        ("当前是手动选的、还能用，B 更该先用 → 不切", [acc("A", active: true, s: 10, w: 50, wResetH: 144), acc("B", active: false, s: 0, w: 30, wResetH: 24)], nil),
-        ("候选 5 小时快满会打折：B 5h 90%，C 5h 0% 且作废速度接近 → 选 C", [acc("A", active: true, s: 99, w: 50, wResetH: 100), acc("B", active: false, s: 90, w: 40, wResetH: 48), acc("C", active: false, s: 0, w: 40, wResetH: 60)], "/tmp/C"),
+        (L("当前 5 小时用完 → 切到最该先用的", "5-hour window used up → switch to the account to use first"), [acc("A", active: true, s: 99.5, w: 40, wResetH: 100), acc("B", active: false, s: 10, w: 20, wResetH: 48), acc("C", active: false, s: 0, w: 0, wResetH: 120)], "/tmp/B"),
+        (L("当前 5 小时 98%、每周 98% → 还不算用完，且没有更该先用的 → 不切", "5-hour 98%, weekly 98% → not used up and nothing better → stay"), [acc("A", active: true, s: 98, w: 98, wResetH: 20), acc("B", active: false, s: 0, w: 10, wResetH: 140)], nil),
+        (L("当前账号数据取不到（被限流）→ 不切", "No data for the current account (rate limited) → stay"), [acc("A", active: true, s: 0, w: 0, wResetH: 100, err: L("被限流（429）", "rate limited (429)")), acc("B", active: false, s: 0, w: 10, wResetH: 24)], nil),
+        (L("当前每周用完 → 切", "Weekly used up → switch"), [acc("A", active: true, s: 10, w: 99, wResetH: 100), acc("B", active: false, s: 0, w: 50, wResetH: 140)], "/tmp/B"),
+        (L("当前能用，B 早 5 天重置且有余量 → 先用 B", "Current usable, B resets 5 days earlier with room → use B first"), [acc("A", active: true, s: 10, w: 50, wResetH: 144), acc("B", active: false, s: 0, w: 30, wResetH: 24)], "/tmp/B"),
+        (L("当前能用，B 只早 6 小时 → 不切", "Current usable, B only 6 h earlier → stay"), [acc("A", active: true, s: 10, w: 50, wResetH: 30), acc("B", active: false, s: 0, w: 30, wResetH: 24)], nil),
+        (L("当前能用，B 早但只剩 5% → 不切", "Current usable, B earlier but only 5% left → stay"), [acc("A", active: true, s: 10, w: 50, wResetH: 144), acc("B", active: false, s: 0, w: 95, wResetH: 24)], nil),
+        (L("当前用完，其他也都用完 → 不切", "Current used up, all others too → stay"), [acc("A", active: true, s: 100, w: 50, wResetH: 144), acc("B", active: false, s: 100, w: 10, wResetH: 24), acc("C", active: false, s: 0, w: 100, wResetH: 24)], nil),
+        (L("候选有报错 → 不选它", "Candidate has an error → skip it"), [acc("A", active: true, s: 100, w: 50, wResetH: 144), acc("B", active: false, s: 0, w: 10, wResetH: 24, err: L("需要重新登录", "sign in again"))], nil),
+        (L("当前 5 小时满但 3 分钟后重置 → 先等", "5-hour full but resets in 3 min → wait"), [accS("A", active: true, s: 100, sResetMin: 3, w: 50, wResetH: 144), acc("B", active: false, s: 0, w: 10, wResetH: 24)], nil),
+        (L("当前 5 小时满、40 分钟后才重置 → 切", "5-hour full, resets in 40 min → switch"), [accS("A", active: true, s: 100, sResetMin: 40, w: 50, wResetH: 144), acc("B", active: false, s: 0, w: 10, wResetH: 24)], "/tmp/B"),
+        (L("两个候选：B 剩 60% 两天后重置，C 剩 90% 六天后 → 选 B（作废更快）", "Two candidates: B 60% left resets in 2 days, C 90% left in 6 days → B (expires sooner)"), [acc("A", active: true, s: 99, w: 50, wResetH: 100), acc("B", active: false, s: 0, w: 40, wResetH: 48), acc("C", active: false, s: 0, w: 10, wResetH: 144)], "/tmp/B"),
+        (L("当前是手动选的、还能用，B 更该先用 → 不切", "Current was picked by hand and usable, B would be better → stay"), [acc("A", active: true, s: 10, w: 50, wResetH: 144), acc("B", active: false, s: 0, w: 30, wResetH: 24)], nil),
+        (L("候选 5 小时快满会打折：B 5h 90%，C 5h 0% 且作废速度接近 → 选 C", "Candidates near a full 5-hour window are discounted: B 5h 90%, C 5h 0% → C"), [acc("A", active: true, s: 99, w: 50, wResetH: 100), acc("B", active: false, s: 90, w: 40, wResetH: 48), acc("C", active: false, s: 0, w: 40, wResetH: 60)], "/tmp/C"),
     ]
     // 提前重置检测
     do {
@@ -57,17 +63,17 @@ if CommandLine.arguments.contains("--selftest") {
         let after = [acc("A", active: true, s: 5, w: 0, wResetH: 168)]
         let (_, seen) = detectEarlyResets(previous: [:], accounts: before, now: now)
         let (ev, _) = detectEarlyResets(previous: seen, accounts: after, now: now)
-        print(ev.count == 2 ? "✓ 提前重置检测：\(ev.joined(separator: "；"))" : "✗ 提前重置检测：得到 \(ev.count) 个事件")
+        print(ev.count == 2 ? L("✓ 提前重置检测：", "✓ Early reset detection: ") + ev.joined(separator: L("；", "; ")) : L("✗ 提前重置检测：得到 \(ev.count) 个事件", "✗ Early reset detection: got \(ev.count) events"))
         if ev.count != 2 { exit(1) }
     }
     var fail = 0
     for (name, accs, want) in cases {
-        let d = decideAutoSwitch(accs, now: now, pinnedDir: name.hasPrefix("当前是手动选的") ? "/tmp/A" : nil)
+        let d = decideAutoSwitch(accs, now: now, pinnedDir: name.hasPrefix(pinnedCase) ? "/tmp/A" : nil)
         let ok = d.target == want
         if !ok { fail += 1 }
-        print("\(ok ? "✓" : "✗") \(name)：\(d.reason)")
+        print("\(ok ? "✓" : "✗") \(name)\(L("：", ": "))\(d.reason)")
     }
-    print(fail == 0 ? "全部通过" : "\(fail) 个失败")
+    print(fail == 0 ? L("全部通过", "All passed") : L("\(fail) 个失败", "\(fail) failed"))
     exit(fail == 0 ? 0 : 1)
 }
 
@@ -81,28 +87,32 @@ if CommandLine.arguments.contains("--print") {
         switch s.claude {
         case .ok(let accounts):
             for a in accounts {
-                print("Claude · \(a.label)  \(a.email)  [\(ago(a.updatedAt, now: now))]")
+                print("Claude · \(a.label)  \(a.email)  [\(ago(a.updatedAt, now: now))]" + (a.plan.map { "  \($0)" } ?? ""))
                 if let e = a.error { print("  ⚠︎ \(e)") }
+                if let w = a.warning, a.error == nil { print("  ⚠︎ \(w)") }
+                for n in a.notes { print("  \(n)") }
                 for w in a.windows {
                     let when = w.resetsAt.map { clockFmt.string(from: $0) } ?? "—"
-                    let tail = w.resetsAt == nil ? "未开始计时" : (w.wasReset ? "\(when) 已重置（等新数据）" : "\(when) 重置（还有 \(countdown(w.resetsAt, now: now))）")
-                    print("  \(w.label)  \(bar(w.percent)) \(Int(w.percent.rounded()))%  \(tail)")
+                    let tail = w.resetsAt == nil ? L("未开始计时", "not started") : (w.wasReset ? L("\(when) 已重置（等新数据）", "reset at \(when) (waiting for new data)") : L("\(when) 重置（还有 \(countdown(w.resetsAt, now: now))）", "resets \(when) (in \(countdown(w.resetsAt, now: now)))"))
+                    print("  \(w.label)  \(bar(w.percent)) \(Int(w.percent.rounded()))%  \(tail)" + (w.isActive ? L("  ← 当前卡住你的", "  ← binding") : ""))
+                    if let pw = paceWarning(w, now: now) { print("    ⚡ \(pw.text)") }
                 }
             }
         case .err(let m): print("Claude ⚠︎ \(m)")
         }
         if case .ok(let accounts) = s.claude {
-            for a in accounts where !a.extraKeys.isEmpty { print("  \(a.label) 额外额度项：\(a.extraKeys.joined(separator: "、"))") }
-            print("自动切换判断（只看不切）：\(decideAutoSwitch(accounts, now: now).reason)")
+            for a in accounts where !a.extraKeys.isEmpty { print(L("  \(a.label) 额外额度项：", "  \(a.label) extra quota items: ") + a.extraKeys.joined(separator: listSep)) }
+            print(L("自动切换判断（只看不切）：\(decideAutoSwitch(accounts, now: now).reason)", "Automatic switching (dry run): \(decideAutoSwitch(accounts, now: now).reason)"))
         }
         let ns = await fetchOfficialNotices()
-        print(ns.isEmpty ? "官方状态页：最近 7 天没有涉及额度/重置的公告" : ns.map { "官方公告：\($0.title)  \($0.url)" }.joined(separator: "\n"))
+        print(ns.isEmpty ? L("官方状态页：最近 7 天没有涉及额度/重置的公告", "Status page: no notices about limits or resets in the last 7 days")
+                         : ns.map { L("官方公告：", "Official notice: ") + "\($0.title)  \($0.url)" }.joined(separator: "\n"))
         switch s.cursor {
         case .ok(let u):
             let when = u.cycleEnd.map { clockFmt.string(from: $0) } ?? "—"
             let money = (u.usedCents != nil && u.limitCents != nil) ? "\(dollars(u.usedCents!)) / \(dollars(u.limitCents!))  " : ""
-            print("Cursor  \(u.plan ?? "")  [\(u.source)]")
-            print("  本期包含额度 \(money)\(bar(u.percent)) \(Int(u.percent.rounded()))%  \(when) 重置（还有 \(countdown(u.cycleEnd, now: now))）")
+            print("Cursor  \(u.plan ?? "")" + (u.source == "direct" ? "" : "  [\(u.source)]"))
+            print(L("  本期包含额度 \(money)\(bar(u.percent)) \(Int(u.percent.rounded()))%  \(when) 重置（还有 \(countdown(u.cycleEnd, now: now))）", "  Included this cycle \(money)\(bar(u.percent)) \(Int(u.percent.rounded()))%  resets \(when) (in \(countdown(u.cycleEnd, now: now)))"))
             if let p = u.pooled { print("  \(p)") }
         case .err(let m): print("Cursor ⚠︎ \(m)")
         }

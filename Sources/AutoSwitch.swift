@@ -9,8 +9,8 @@ import SQLite3
 
 struct AutoSwitchDecision { let target: String?; let reason: String }
 
-func sessionWindow(_ a: ClaudeAccount) -> UsageWindow? { a.windows.first { $0.label.hasPrefix("5") } }
-func weeklyWindow(_ a: ClaudeAccount) -> UsageWindow? { a.windows.first { $0.label == "每周（全部模型）" } }
+func sessionWindow(_ a: ClaudeAccount) -> UsageWindow? { a.windows.first(where: isSessionWindow) }
+func weeklyWindow(_ a: ClaudeAccount) -> UsageWindow? { a.windows.first(where: isWeeklyAllWindow) }
 
 /// 规则（三种重置都算）：
 /// - 能用：5 小时窗口 < 99% 且 每周（全部模型）< 99%，且没有报错（≥99% 视为用完）
@@ -31,9 +31,9 @@ func decideAutoSwitch(_ accounts: [ClaudeAccount], now: Date, pinnedDir: String?
     }
     func fmtU(_ x: Double) -> String { String(format: "%.1f", x) }
 
-    guard let cur = accounts.first(where: { $0.active }) else { return AutoSwitchDecision(target: nil, reason: "没有在用的托管账号") }
+    guard let cur = accounts.first(where: { $0.active }) else { return AutoSwitchDecision(target: nil, reason: L("没有在用的托管账号", "No managed account is active")) }
     if let e = cur.error {
-        return AutoSwitchDecision(target: nil, reason: "\(cur.label) 的数据暂时取不到（\(e)），不切换")
+        return AutoSwitchDecision(target: nil, reason: L("\(cur.label) 的数据暂时取不到（\(e)），不切换", "No data for \(cur.label) right now (\(e)), not switching"))
     }
     let candidates = accounts.filter { !$0.active && usable($0) && $0.configDir != nil }
         .sorted { (urgency($0), -sess($0)) > (urgency($1), -sess($1)) }
@@ -42,22 +42,22 @@ func decideAutoSwitch(_ accounts: [ClaudeAccount], now: Date, pinnedDir: String?
         // 只是 5 小时窗口满了、每周还有、马上重置：等一下
         if cur.error == nil, week(cur) < 99, let sw = sessionWindow(cur), let r = sw.resetsAt,
            r.timeIntervalSince(now) <= 5 * 60, r > now {
-            return AutoSwitchDecision(target: nil, reason: "\(cur.label) 的 5 小时窗口 \(max(Int(r.timeIntervalSince(now) / 60), 1)) 分钟后重置，先等")
+            return AutoSwitchDecision(target: nil, reason: L("\(cur.label) 的 5 小时窗口 \(max(Int(r.timeIntervalSince(now) / 60), 1)) 分钟后重置，先等", "\(cur.label)'s 5-hour window resets in \(max(Int(r.timeIntervalSince(now) / 60), 1)) min, waiting"))
         }
-        guard let best = candidates.first else { return AutoSwitchDecision(target: nil, reason: "\(cur.label) 用完了，但没有其他可用账号") }
+        guard let best = candidates.first else { return AutoSwitchDecision(target: nil, reason: L("\(cur.label) 用完了，但没有其他可用账号", "\(cur.label) is used up, but no other account has quota left")) }
         return AutoSwitchDecision(target: best.configDir,
-            reason: "\(cur.label) 用完了（5 小时 \(Int(sess(cur)))%，每周 \(Int(week(cur)))%），切到 \(best.label)（每周剩 \(100 - Int(week(best)))%，\(countdown(weeklyReset(best), now: now))后重置）")
+            reason: L("\(cur.label) 用完了（5 小时 \(Int(sess(cur)))%，每周 \(Int(week(cur)))%），切到 \(best.label)（每周剩 \(100 - Int(week(best)))%，\(countdown(weeklyReset(best), now: now))后重置）", "\(cur.label) is used up (5-hour \(Int(sess(cur)))%, weekly \(Int(week(cur)))%), switching to \(best.label) (\(100 - Int(week(best)))% of its week left, resets in \(countdown(weeklyReset(best), now: now)))"))
     }
-    guard let best = candidates.first else { return AutoSwitchDecision(target: nil, reason: "\(cur.label) 还能用；没有其他可用账号") }
+    guard let best = candidates.first else { return AutoSwitchDecision(target: nil, reason: L("\(cur.label) 还能用；没有其他可用账号", "\(cur.label) still has quota; no other account available")) }
     if let pin = pinnedDir, pin == cur.configDir {
-        return AutoSwitchDecision(target: nil, reason: "\(cur.label) 是你手动选的，用完前不自动换")
+        return AutoSwitchDecision(target: nil, reason: L("\(cur.label) 是你手动选的，用完前不自动换", "You picked \(cur.label) by hand, so it stays until it runs out"))
     }
     let gap = weeklyReset(cur).timeIntervalSince(weeklyReset(best))
     if urgency(best) >= 1.5 * urgency(cur) && gap > 12 * 3600 && week(best) <= 90 {
         return AutoSwitchDecision(target: best.configDir,
-            reason: "\(best.label) 的每周额度先作废（早 \(Int(gap / 3600)) 小时重置，还剩 \(100 - Int(week(best)))%，作废速度 \(fmtU(urgency(best))) vs \(fmtU(urgency(cur)))），先用它")
+            reason: L("\(best.label) 的每周额度先作废（早 \(Int(gap / 3600)) 小时重置，还剩 \(100 - Int(week(best)))%，作废速度 \(fmtU(urgency(best))) vs \(fmtU(urgency(cur)))），先用它", "\(best.label)'s weekly quota expires first (resets \(Int(gap / 3600)) h earlier with \(100 - Int(week(best)))% left, expiry rate \(fmtU(urgency(best))) vs \(fmtU(urgency(cur)))), using it first"))
     }
-    return AutoSwitchDecision(target: nil, reason: "\(cur.label) 还能用，暂不切换")
+    return AutoSwitchDecision(target: nil, reason: L("\(cur.label) 还能用，暂不切换", "\(cur.label) still has quota, not switching"))
 }
 
 /// 官方提前重置检测：同一账号两次读数之间，用量明显下降、而原定重置时间还没到
@@ -66,12 +66,12 @@ func detectEarlyResets(previous: [String: WindowSeen], accounts: [ClaudeAccount]
     var seen: [String: WindowSeen] = [:]
     var events: [String] = []
     for a in accounts where a.error == nil {
-        for w in a.windows where w.label.hasPrefix("5") || w.label == "每周（全部模型）" {
-            let key = a.email + "|" + w.label
+        for w in a.windows where isSessionWindow(w) || isWeeklyAllWindow(w) {
+            let key = a.email + "|" + (isSessionWindow(w) ? "session" : "weekly_all")
             let pct = effective(w, now).pct
             if let old = previous[key], let oldReset = old.resetsAt,
                old.pct - pct >= 15, now < oldReset.addingTimeInterval(-600) {
-                events.append("\(a.label) 的\(w.label)提前重置了（\(Int(old.pct))% → \(Int(pct))%，原定 \(clockFmt.string(from: oldReset))）")
+                events.append(L("\(a.label) 的\(w.label)提前重置了（\(Int(old.pct))% → \(Int(pct))%，原定 \(clockFmt.string(from: oldReset))）", "\(a.label): \(w.label) reset early (\(Int(old.pct))% → \(Int(pct))%, was due \(clockFmt.string(from: oldReset)))"))
             }
             seen[key] = WindowSeen(pct: pct, resetsAt: w.resetsAt)
         }

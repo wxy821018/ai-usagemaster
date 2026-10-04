@@ -9,11 +9,16 @@ struct CachedWindow: Codable {
     var label: String
     var percent: Double
     var resetsAt: Date?
+    var kind: String?
+    var severity: String?
+    var isActive: Bool?
+    var scope: String?
 }
 
 struct CachedAccount: Codable {
     var windows: [CachedWindow] = []
     var extraKeys: [String] = []
+    var notes: [String]? = nil
     var fetchedAt: Date?             // 上次成功拿到数据的时间
     var attemptedAt: Date?           // 上次发出请求的时间（成功失败都算）
     var retryAfter: Date?            // 被限流时，这个时间之前不再请求
@@ -62,11 +67,13 @@ final class UsageCache: @unchecked Sendable {
         save()
     }
 
-    func storeSuccess(_ key: String, windows: [UsageWindow], extraKeys: [String], now: Date = Date()) {
+    func storeSuccess(_ key: String, windows: [UsageWindow], extraKeys: [String], notes: [String]? = nil, now: Date = Date()) {
         lock.lock(); defer { lock.unlock() }
         var c = map[key] ?? CachedAccount()
-        c.windows = windows.map { CachedWindow(label: $0.label, percent: $0.percent, resetsAt: $0.resetsAt) }
+        c.windows = windows.map { CachedWindow(label: $0.label, percent: $0.percent, resetsAt: $0.resetsAt,
+                                               kind: $0.kind, severity: $0.severity, isActive: $0.isActive, scope: $0.scope) }
         c.extraKeys = extraKeys
+        if let n = notes { c.notes = n }
         c.fetchedAt = now
         c.attemptedAt = now
         c.retryAfter = nil
@@ -91,7 +98,22 @@ final class UsageCache: @unchecked Sendable {
 
     /// 用缓存的数字还原窗口（重置时间已过的按 0 处理）
     func windows(_ key: String, now: Date = Date()) -> [UsageWindow] {
-        (get(key)?.windows ?? []).map { makeWindow($0.label, percent: $0.percent, resetsAt: $0.resetsAt, now: now) }
+        (get(key)?.windows ?? []).map { c in
+            let (kind, scope) = c.kind != nil ? (c.kind, c.scope) : legacyKind(c.label)
+            return makeWindow(windowLabel(kind: kind, scope: scope, fallback: c.label),
+                              percent: c.percent, resetsAt: c.resetsAt, now: now,
+                              kind: kind, severity: c.severity, isActive: c.isActive ?? false, scope: scope)
+        }
+    }
+
+    /// 早期版本的缓存只存了中文标签，没有 kind：按标签推断
+    private func legacyKind(_ label: String) -> (String?, String?) {
+        if label.hasPrefix("5") { return ("session", nil) }
+        if label == "每周（全部模型）" { return ("weekly_all", nil) }
+        if label.hasPrefix("每周（"), label.hasSuffix("）") {
+            return ("weekly_scoped", String(label.dropFirst(3).dropLast()))
+        }
+        return (nil, nil)
     }
 }
 
@@ -120,7 +142,7 @@ func requestUsage(token: String) async -> UsageFetchResult {
         let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
         switch code {
         case 200:
-            guard let d = try JSONSerialization.jsonObject(with: body) as? [String: Any] else { return .failure("返回格式变了，解析不出用量") }
+            guard let d = try JSONSerialization.jsonObject(with: body) as? [String: Any] else { return .failure(L("返回格式变了，解析不出用量", "Unexpected response format, could not read usage")) }
             return .ok(d)
         case 429: return .rateLimited(retryAfterSeconds(resp))
         case 401: return .unauthorized
