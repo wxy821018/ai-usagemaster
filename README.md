@@ -86,7 +86,7 @@ Choose **Add Claude Account…** in the menu. A Terminal window runs the officia
 ## Known limitations
 
 - A personal project, not affiliated with Anthropic or Cursor. The endpoints it uses are not publicly documented and may change at any time.
-- macOS only for now. On Windows, Claude Code keeps credentials in `%USERPROFILE%\.claude\.credentials.json` (or in the `CLAUDE_CONFIG_DIR` directory when that is set), and Cursor keeps its database at `%APPDATA%\Cursor\User\globalStorage\state.vscdb`. Ports are welcome; see [docs/WINDOWS.md](docs/WINDOWS.md) for what has been verified so far.
+- macOS only for now. On Windows, Claude Code keeps credentials in `%USERPROFILE%\.claude\.credentials.json` (or in the `CLAUDE_CONFIG_DIR` directory when that is set), and Cursor keeps its database at `%APPDATA%\Cursor\User\globalStorage\state.vscdb`. A port is under way: the non-UI code already builds with Swift 6.4 for Windows and runs `--print` and `--stats` there; [docs/WINDOWS.md](docs/WINDOWS.md) lists what has been verified and the changes still needed.
 - Automatic switching only covers accounts added through AI UsageMaster.
 
 ## Roadmap
@@ -94,7 +94,7 @@ Choose **Add Claude Account…** in the menu. A Terminal window runs the officia
 - Several accounts per service for the other AI services, the way Claude works now
 - Verify the other services against live accounts
 - Usage per Claude account in the cost statistics
-- Windows version (see [docs/WINDOWS.md](docs/WINDOWS.md))
+- Windows version: command line and status line first, then a tray icon, account switching last (see [docs/WINDOWS.md](docs/WINDOWS.md))
 
 ## Acknowledgements
 
