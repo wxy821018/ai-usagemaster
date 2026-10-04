@@ -19,7 +19,7 @@ I use several Claude accounts and I use them a lot, so one of them is always run
 - **Multiple Claude accounts.** For each account: the 5-hour window, the weekly limit (all models) and per-model weekly limits, with progress bars and reset countdowns. Colors follow the warning level the server reports for each limit (orange at 75% and red at 90% when it reports none). The menu bar number is the limit the server marks as the one currently holding you back.
 - **More detail per account.** Plan (Max 20x, Max 5x, Team), extra usage spent against its monthly cap, and any usage resets granted to the account (shown only, never redeemed).
 - **"Using it fast" warning.** Same rule Claude Code uses: 90% of the 5-hour window gone while 72% or less of the time has passed, or 75%/50% of the week gone with 60%/35% or less of the week passed. Shows when it runs out at the current pace.
-- **Switch accounts.** Click an account in the menu and the `claude` CLI uses it from then on. No new login needed. New sessions pick it up right away; a session that is already open may keep the previous account until you restart it.
+- **Switch accounts.** Click an account in the menu and the `claude` CLI uses it from then on. No new login needed. New sessions pick it up right away, and a session that is already open follows on its next request, within about 30 seconds (tested with Claude Code 2.1.288).
 - **Two switching modes**
   - Automatic. Leaves an account once its 5-hour window or weekly limit reaches 99%. Among accounts with quota left, it prefers the one whose weekly quota is about to expire, so unused quota is not wasted. If the 5-hour window resets within 5 minutes it waits instead. At least 15 minutes between automatic switches. An account you pick by hand stays until it runs out.
   - Manual. You pick, it never switches on its own.
@@ -68,6 +68,7 @@ Choose **Add Claude Account…** in the menu. A Terminal window runs the officia
 - Keychain writes go through the standard input of `security -i`, so tokens never appear in process arguments.
 - **Refreshing only touches AI UsageMaster's own copies of the credentials**, so the sign-in of the Claude Code you use day to day is not affected.
 - Switching accounts changes two things: the default Keychain item `Claude Code-credentials` and the `oauthAccount` entry in `~/.claude.json`. Before switching, the current credentials (which Claude Code may have refreshed) are saved back to that account's own directory.
+- Claude Code sometimes leaves a backup copy of its credentials in `~/.claude/.credentials.json`. While that file exists, running sessions only notice a change when the file's modification time changes, so after a switch AI UsageMaster updates that timestamp. It never changes the file's contents and never creates it.
 - If you also use another account switcher (Orca, for example), switch with only one of them. Two tools taking turns on the same default sign-in will invalidate one side's credentials and force a new login.
 
 ## Known limitations

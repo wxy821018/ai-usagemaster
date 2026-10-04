@@ -166,7 +166,18 @@ func switchDefault(to x: ManagedAccount, all: [ManagedAccount]) -> String? {
         try data.write(to: URL(fileURLWithPath: defaultConfigPath), options: .atomic)
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: defaultConfigPath)
     } catch { return L("写 ~/.claude.json 失败", "Could not write ~/.claude.json") }
+    nudgeRunningSessions()
     return nil
+}
+
+/// 让已经开着的 Claude Code 会话尽快换到新账号。
+/// Claude Code（2.1.288 实测）每次请求前检查凭据有没有变：~/.claude/.credentials.json 存在时只看它的修改时间，
+/// 不存在时才重读钥匙串（钥匙串读取缓存 30 秒）。这个文件是钥匙串写入失败时留下的备用副本，
+/// 它在的话只改钥匙串，开着的会话察觉不到。所以文件存在时更新一下修改时间（不改内容，也不新建）。
+func nudgeRunningSessions() {
+    let path = NSHomeDirectory() + "/.claude/.credentials.json"      // 切换改的是默认那份凭据，对应默认配置目录
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    try? FileManager.default.setAttributes([.modificationDate: Date()], ofItemAtPath: path)
 }
 
 /// 同一账号的刷新串行进行，避免两次刷新互相把对方的 refresh token 作废

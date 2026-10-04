@@ -364,8 +364,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         } else {
             if autoSwitch { pinnedDir = x.dir }
             let who = x.email ?? ""
-            switchNote = L("已切换到 \(who)：新开的 claude 会话会用它；已经开着的会话可能还在用原来的账号，退出重开就会换过去",
-                           "Switched to \(who). New claude sessions use it; sessions that are already open may keep the previous account until you restart them")
+            switchNote = L("已切换到 \(who)：新开的 claude 会话直接用它，已经开着的会话下一次请求时跟着换（最多约 30 秒）",
+                           "Switched to \(who). New claude sessions use it, and open sessions follow on their next request (within about 30 seconds)")
                 + (autoSwitch ? L("。自动模式：它用完前不会被自动换走", ". Automatic mode: it stays until it runs out") : "")
         }
         refresh()
