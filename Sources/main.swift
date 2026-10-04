@@ -73,6 +73,38 @@ if CommandLine.arguments.contains("--selftest") {
         if !ok { fail += 1 }
         print("\(ok ? "✓" : "✗") \(name)\(L("：", ": "))\(d.reason)")
     }
+    // 提醒规则
+    func types(_ r: (alerts: [AlertItem], usable: [String: Bool])) -> [AlertType] { r.alerts.map { $0.type } }
+    let alertCases: [(String, () -> Bool)] = [
+        (L("在用账号 5 小时 85% → 80% 提醒", "Active 5-hour at 85% → 80% alert"), {
+            let r = evaluateAlerts(accounts: [acc("A", active: true, s: 85, w: 10, wResetH: 100)], cursor: nil, autoMode: true, previousUsable: [:], now: now)
+            return r.alerts.contains { $0.type == .threshold && $0.key.hasPrefix("th80|") } }),
+        (L("手动模式、在用账号用完、B 可用 → 建议切到 B", "Manual mode, active used up, B usable → suggest B"), {
+            let r = evaluateAlerts(accounts: [acc("A", active: true, s: 100, w: 50, wResetH: 100), acc("B", active: false, s: 0, w: 10, wResetH: 24)], cursor: nil, autoMode: false, previousUsable: [:], now: now)
+            return r.alerts.contains { $0.type == .exhausted && $0.switchDir == "/tmp/B" } }),
+        (L("自动模式下用完不发「建议切换」（交给自动切换）", "Automatic mode: no switch suggestion (auto-switch handles it)"), {
+            let r = evaluateAlerts(accounts: [acc("A", active: true, s: 100, w: 50, wResetH: 100), acc("B", active: false, s: 0, w: 10, wResetH: 24)], cursor: nil, autoMode: true, previousUsable: [:], now: now)
+            return !types(r).contains(.exhausted) }),
+        (L("全部用完 → 告诉最早恢复的账号", "All used up → earliest recovery"), {
+            let r = evaluateAlerts(accounts: [acc("A", active: true, s: 100, w: 50, wResetH: 100), acc("B", active: false, s: 10, w: 100, wResetH: 24)], cursor: nil, autoMode: true, previousUsable: [:], now: now)
+            return r.alerts.contains { $0.type == .allExhausted && $0.body.contains("A") } }),
+        (L("上一轮用完、这一轮能用 → 恢复提醒", "Used up last round, usable now → recovered"), {
+            let r = evaluateAlerts(accounts: [acc("A", active: true, s: 10, w: 10, wResetH: 100), acc("B", active: false, s: 0, w: 10, wResetH: 100)], cursor: nil, autoMode: false, previousUsable: ["B@x": false], now: now)
+            return r.alerts.contains { $0.type == .recovered && $0.switchDir == "/tmp/B" } }),
+        (L("B 每周 10 小时后重置还剩 50% → 快作废提醒", "B resets in 10 h with 50% left → expiring"), {
+            let r = evaluateAlerts(accounts: [acc("A", active: true, s: 10, w: 10, wResetH: 100), acc("B", active: false, s: 0, w: 50, wResetH: 10)], cursor: nil, autoMode: true, previousUsable: [:], now: now)
+            return types(r).contains(.expiring) }),
+        (L("同样的数据算两次，去重 key 一样", "Same data twice → same dedupe keys"), {
+            let a = [acc("A", active: true, s: 96, w: 80, wResetH: 10)]
+            let k1 = evaluateAlerts(accounts: a, cursor: nil, autoMode: true, previousUsable: [:], now: now).alerts.map { $0.key }
+            let k2 = evaluateAlerts(accounts: a, cursor: nil, autoMode: true, previousUsable: [:], now: now.addingTimeInterval(120)).alerts.map { $0.key }
+            return !k1.isEmpty && k1 == k2 }),
+    ]
+    for (name, check) in alertCases {
+        let ok = check()
+        if !ok { fail += 1 }
+        print("\(ok ? "✓" : "✗") \(name)")
+    }
     print(fail == 0 ? L("全部通过", "All passed") : L("\(fail) 个失败", "\(fail) failed"))
     exit(fail == 0 ? 0 : 1)
 }

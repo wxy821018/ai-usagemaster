@@ -58,6 +58,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func applicationDidFinishLaunching(_ n: Notification) {
         migrateLegacyAccounts()
+        AlertCenter.shared.setup()
+        AlertCenter.shared.onSwitch = { [weak self] dir in self?.performSwitch(dir: dir) }
         item.autosaveName = "UsageMaster"
         item.button?.title = L("用量…", "Usage…")
         menu.delegate = self
@@ -96,6 +98,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self.fetching = false
             self.scheduleRetryIfNeeded()
             self.maybeAutoSwitch()
+            if let a = self.claude, self.claudeErr == nil {
+                AlertCenter.shared.process(accounts: a, cursor: self.cursorErr == nil ? self.cursor : nil, autoMode: self.autoSwitch)
+            }
             self.renderTitle()
         }
     }
@@ -279,6 +284,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         sl.target = self
         sl.state = statusLineInstalled() ? .on : .off
         menu.addItem(sl)
+        let alertsItem = NSMenuItem(title: L("提醒", "Notifications"), action: nil, keyEquivalent: "")
+        let sub = NSMenu()
+        for type in AlertType.allCases {
+            let mi = NSMenuItem(title: type.menuTitle, action: #selector(toggleAlert(_:)), keyEquivalent: "")
+            mi.target = self
+            mi.representedObject = type.rawValue
+            mi.state = type.enabled ? .on : .off
+            sub.addItem(mi)
+        }
+        sub.addItem(.separator())
+        sub.addItem(withTitle: L("发一条测试提醒", "Send a Test Notification"), action: #selector(testAlert), keyEquivalent: "").target = self
+        alertsItem.submenu = sub
+        menu.addItem(alertsItem)
         menu.addItem(withTitle: L("打开 Claude 用量页", "Open Claude Usage Page"), action: #selector(openClaude), keyEquivalent: "").target = self
         menu.addItem(withTitle: L("打开 Cursor 用量页", "Open Cursor Usage Page"), action: #selector(openCursor), keyEquivalent: "").target = self
         menu.addItem(.separator())
@@ -301,7 +319,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self.notices = found
             var done = self.notifiedNoticeIds
             for n in found where !done.contains(n.id) {
-                self.notify(L("Claude 官方公告（可能涉及额度重置）", "Claude status notice (may involve a usage reset)"), n.title)
+                AlertCenter.shared.post(.resets, L("Claude 官方公告（可能涉及额度重置）", "Claude status notice (may involve a usage reset)"), n.title)
                 done.insert(n.id)
             }
             self.notifiedNoticeIds = done
@@ -313,7 +331,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard let accounts = claude, claudeErr == nil else { return }
         let (events, seen) = detectEarlyResets(previous: lastSeen, accounts: accounts, now: Date())
         lastSeen = seen
-        for ev in events { notify(L("AI UsageMaster：额度提前重置", "AI UsageMaster: usage reset early"), ev); switchNote = ev }
+        for ev in events { AlertCenter.shared.post(.resets, L("额度提前重置了", "Usage reset early"), ev); switchNote = ev }
         // 用量返回里第一次出现新的额度项（官方活动 / 临时额度 / 重置额度的信号）
         for a in accounts where a.error == nil {
             let now = Set(a.extraKeys)
@@ -322,7 +340,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 if !added.isEmpty {
                     let items = added.sorted().joined(separator: listSep)
                     let msg = L("\(a.label) 的用量数据里出现新的额度项：\(items)（可能是官方活动或重置）", "New quota items in \(a.label)'s usage data: \(items) (possibly a promotion or a reset)")
-                    notify(L("AI UsageMaster：Claude 额度有变化", "AI UsageMaster: Claude quota changed"), msg)
+                    AlertCenter.shared.post(.resets, L("Claude 额度有变化", "Claude quota changed"), msg)
                     switchNote = msg
                 }
             }
@@ -339,14 +357,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             switchNote = L("自动切换失败：\(err)", "Automatic switch failed: \(err)")
         } else {
             switchNote = L("自动切换：\(d.reason)（\(clockFmt.string(from: Date()))）", "Automatic switch: \(d.reason) (\(clockFmt.string(from: Date())))")
-            notify(L("AI UsageMaster 已切换 Claude 账号", "AI UsageMaster switched Claude accounts"), d.reason)
+            AlertCenter.shared.post(.switched, L("已自动切换 Claude 账号", "Switched Claude accounts automatically"), d.reason)
             refresh()
         }
-    }
-
-    func notify(_ title: String, _ body: String) {
-        let esc = { (s: String) in s.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"") }
-        _ = runCommand("/usr/bin/osascript", ["-e", "display notification \"\(esc(body))\" with title \"\(esc(title))\""], timeout: 5)
     }
 
     @objc func setAutoMode() {
@@ -356,7 +369,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
     @objc func setManualMode() { autoSwitch = false; pinnedDir = nil; switchNote = L("切换方式：手动（不会自动换账号）", "Switching: manual (never switches on its own)") }
     @objc func switchTo(_ sender: NSMenuItem) {
-        guard let dir = sender.representedObject as? String else { return }
+        if let dir = sender.representedObject as? String { performSwitch(dir: dir) }
+    }
+
+    /// 手动切换（菜单里点账号、或点了建议切换的通知）
+    func performSwitch(dir: String) {
         let all = listManagedAccounts()
         guard let x = all.first(where: { $0.dir == dir }) else { return }
         if let err = switchDefault(to: x, all: all) {
@@ -370,6 +387,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         refresh()
     }
+    @objc func toggleAlert(_ sender: NSMenuItem) {
+        if let raw = sender.representedObject as? String, let type = AlertType(rawValue: raw) { type.enabled.toggle() }
+    }
+    @objc func testAlert() { AlertCenter.shared.sendTest() }
     @objc func toggleStatusLine() {
         switchNote = statusLineInstalled() ? uninstallStatusLine() : installStatusLine()
     }
