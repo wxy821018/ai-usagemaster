@@ -2,6 +2,8 @@
 
 English | [简体中文](README.zh-CN.md)
 
+> **Made for heavy AI users who would rather not babysit their quotas.**
+
 **Claude Code usage and rate limits in your macOS menu bar.** Live 5-hour and weekly usage with reset countdowns for several Claude accounts (Pro, Max, Team) and Cursor, plus one-click or automatic switching of the account your `claude` CLI uses.
 
 ```
