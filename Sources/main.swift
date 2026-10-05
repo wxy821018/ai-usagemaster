@@ -25,6 +25,15 @@ import SQLite3
 if CommandLine.arguments.contains("--statusline") { runStatusLine(); exit(0) }
 if CommandLine.arguments.contains("--install-statusline") { print(installStatusLine()); exit(0) }
 if CommandLine.arguments.contains("--uninstall-statusline") { print(uninstallStatusLine()); exit(0) }
+if CommandLine.arguments.contains("--add-account") {
+    // 新建账号目录并打开登录终端（Windows 版还没有菜单时用它加账号）
+    if let dir = addClaudeAccount() {
+        print(L("已打开登录窗口，账号目录：\(dir)", "Sign-in window opened; account folder: \(dir)"))
+        exit(0)
+    }
+    print(L("打不开登录窗口", "Could not open the sign-in window"))
+    exit(1)
+}
 
 if CommandLine.arguments.contains("--selftest") {
     let now = Date()

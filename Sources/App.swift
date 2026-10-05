@@ -657,9 +657,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         switchNote = statusLineInstalled() ? uninstallStatusLine() : installStatusLine()
     }
     @objc func addAccount() {
-        let name = "acct-" + String(Int(Date().timeIntervalSince1970))
-        try? FileManager.default.createDirectory(atPath: accountsRoot + "/" + name, withIntermediateDirectories: true)
-        openLoginTerminal(configDir: accountsRoot + "/" + name)
+        addClaudeAccount()
     }
     @objc func relogin(_ sender: NSMenuItem) {
         if let dir = sender.representedObject as? String { openLoginTerminal(configDir: dir) }

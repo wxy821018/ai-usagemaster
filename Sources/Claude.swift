@@ -554,9 +554,23 @@ func fetchClaudeDirect(force: Bool = false) async -> Fetch<ClaudeAccount> {
     return .ok(acc)
 }
 
+/// 新建一个账号目录（acct-<时间戳>）并打开登录终端。成功返回目录，失败返回 nil
+@discardableResult
+func addClaudeAccount() -> String? {
+    let dir = accountsRoot + "/acct-" + String(Int(Date().timeIntervalSince1970))
+    guard (try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)) != nil,
+          openLoginTerminal(configDir: dir) else { return nil }
+    return dir
+}
+
 /// 打开终端，用官方 `claude auth login` 登录到指定配置目录。
-/// 授权页用 Chrome 无痕窗口打开（BROWSER 变量），这样浏览器里已登录的 claude.ai 账号不会挡住你登录别的账号。
-func openLoginTerminal(configDir: String) {
+/// 授权页用浏览器的无痕/InPrivate 窗口打开（BROWSER 变量），这样浏览器里已登录的 claude.ai 账号不会挡住你登录别的账号。
+/// Windows 上实测（Claude Code 2.1.289）：`claude auth login` 会调用 BROWSER 指向的 .cmd，授权链接作为一个带双引号的参数传入
+@discardableResult
+func openLoginTerminal(configDir: String) -> Bool {
+#if os(Windows)
+    return openLoginTerminalWindows(configDir: configDir)
+#else
     let claudeBin = [NSHomeDirectory() + "/.local/bin/claude", "/opt/homebrew/bin/claude", "/usr/local/bin/claude"]
         .first { FileManager.default.isExecutableFile(atPath: $0) } ?? "claude"
     let tmp = NSTemporaryDirectory()
@@ -587,7 +601,83 @@ func openLoginTerminal(configDir: String) {
         try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: browserPath)
         try script.write(toFile: path, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: path)
-        NSWorkspace.shared.open(URL(fileURLWithPath: path))
-    } catch {}
+        return NSWorkspace.shared.open(URL(fileURLWithPath: path))
+    } catch { return false }
+#endif
 }
+
+#if os(Windows)
+/// cmd 的 echo 里有特殊含义的字符要用 ^ 转义（中文全角符号不受影响）
+private func cmdEcho(_ s: String) -> String {
+    if s.isEmpty { return "echo." }
+    var out = ""
+    for c in s {
+        switch c {
+        case "^", "&", "|", "<", ">", "(", ")": out += "^" + String(c)
+        case "%": out += "%%"
+        default: out.append(c)
+        }
+    }
+    return "echo " + out
+}
+
+private func openLoginTerminalWindows(configDir: String) -> Bool {
+    let env = ProcessInfo.processInfo.environment
+    let fm = FileManager.default
+    let winDir = configDir.replacingOccurrences(of: "/", with: "\\")
+    let claudeBin = [NSHomeDirectory() + "\\.local\\bin\\claude.exe"].first { fm.fileExists(atPath: $0) } ?? "claude"
+    // 浏览器：Chrome 无痕 → Edge InPrivate → 系统默认浏览器
+    let pf = env["ProgramFiles"] ?? "C:\\Program Files", pf86 = env["ProgramFiles(x86)"] ?? "C:\\Program Files (x86)"
+    let local = env["LOCALAPPDATA"] ?? ""
+    let chrome = [pf + "\\Google\\Chrome\\Application\\chrome.exe", pf86 + "\\Google\\Chrome\\Application\\chrome.exe",
+                  local + "\\Google\\Chrome\\Application\\chrome.exe"].first { fm.fileExists(atPath: $0) }
+    let edge = [pf86 + "\\Microsoft\\Edge\\Application\\msedge.exe", pf + "\\Microsoft\\Edge\\Application\\msedge.exe"]
+        .first { fm.fileExists(atPath: $0) }
+    // %1 原样转发：授权链接里有 &，Claude Code 传进来时已经带着双引号
+    let open: String, where_: String, privateKey: String
+    if let c = chrome {
+        open = "start \"\" \"\(c)\" --incognito %1"; where_ = L("Chrome 无痕窗口", "a Chrome incognito window"); privateKey = "Ctrl+Shift+N"
+    } else if let e = edge {
+        open = "start \"\" \"\(e)\" --inprivate %1"; where_ = L("Edge InPrivate 窗口", "an Edge InPrivate window"); privateKey = "Ctrl+Shift+N"
+    } else {
+        open = "start \"\" %1"; where_ = L("默认浏览器", "your default browser"); privateKey = L("浏览器的无痕快捷键", "your browser's private-window shortcut")
+    }
+    let tmp = NSTemporaryDirectory()
+    let tag = String(UUID().uuidString.prefix(8))
+    let browserPath = (tmp as NSString).appendingPathComponent("usagemaster-incognito-\(tag).cmd")
+    let scriptPath = (tmp as NSString).appendingPathComponent("usagemaster-login-\(tag).cmd")
+    let browser = "@echo off\r\n" + open + "\r\n"
+    // chcp 65001：中文 Windows 默认代码页是 936，不切成 UTF-8 的话下面的中文提示会乱码（脚本文件按 UTF-8 写）
+    let lines = [
+        "@echo off",
+        "chcp 65001 >nul",
+        "title AI UsageMaster",
+        "set \"CLAUDE_CONFIG_DIR=\(winDir)\"",
+        "set \"BROWSER=\(browserPath)\"",
+        "if not exist \"%CLAUDE_CONFIG_DIR%\" mkdir \"%CLAUDE_CONFIG_DIR%\"",
+        cmdEcho(L("AI UsageMaster：添加一个 Claude 账号", "AI UsageMaster: add a Claude account")),
+        cmdEcho(L("授权页会在\(where_)里打开：在那里用你要添加的账号（邮箱）登录，然后点授权。",
+                  "The authorization page opens in \(where_). Sign in there with the account you want to add, then approve.")),
+        cmdEcho(L("如果打开的窗口里已经是别的账号：复制下面打印的链接，按 \(privateKey) 开无痕窗口粘贴打开。",
+                  "If the window is already signed in to another account, copy the link printed below into a private window (\(privateKey)).")),
+        "echo.",
+        "\"\(claudeBin)\" auth login --claudeai",
+        "echo.",
+        "\"\(claudeBin)\" auth status --text",
+        "echo.",
+        cmdEcho(L("完成。运行 AIUsageMaster --print 就能看到这个账号。可以关闭此窗口。",
+                  "Done. Run AIUsageMaster --print to see the account. You can close this window.")),
+        "pause >nul",
+    ]
+    do {
+        try browser.write(toFile: browserPath, atomically: true, encoding: .utf8)
+        try (lines.joined(separator: "\r\n") + "\r\n").write(toFile: scriptPath, atomically: true, encoding: .utf8)
+    } catch { return false }
+    // start 打开新的命令行窗口运行脚本（不跟本进程共用控制台）
+    let p = Process()
+    p.executableURL = URL(fileURLWithPath: (env["ComSpec"] ?? "C:\\Windows\\System32\\cmd.exe"))
+    p.arguments = ["/c", "start", "AI UsageMaster", scriptPath]
+    return (try? p.run()) != nil
+}
+#endif
 

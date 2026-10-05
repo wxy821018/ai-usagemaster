@@ -22,7 +22,7 @@ With `BROWSER` pointing at a `.cmd` file, `claude auth login --claudeai` calls i
 
 The terminal also prints a fallback URL with a different redirect (paste-the-code flow), which can be shown if the browser never opens.
 
-Not yet tested: that the line above really opens an incognito window and completes the sign-in. The test stopped before authorising.
+End to end through `--add-account`, see "Adding an account" below.
 
 ### Running sessions pick up a switched account within seconds
 
@@ -68,7 +68,7 @@ Found by the trial build and self-test. Each is a small, local change; none touc
 | `ServiceGemini.swift` | `abbreviatingWithTildeInPath` | Not in Windows Foundation; one small extension |
 | `App.swift` | Holds `effective()`, `bindingWindow()` and `usd()`, which other files call | Move them into the core so the core builds without the UI |
 | `Alerts.swift` | Rules and macOS delivery (`AlertCenter`) in one file | Split at `// MARK: - 发送`: rules shared, delivery per platform (Windows toast) |
-| `Claude.swift` `openLoginTerminal` | `.command` script opened with `NSWorkspace` | A `.cmd` script started with `cmd /c start`, with `BROWSER` as above |
+| ~~`Claude.swift` `openLoginTerminal`~~ | ~~`.command` script opened with `NSWorkspace`~~ | **Done**, see "Adding an account" below |
 | ~~Data and cache paths~~ | ~~`~/Library/Application Support/UsageMaster`, `~/Library/Application Support/Cursor`, `~/Library/Application Support/orca`~~ | **Done**, see "Paths and file handling" below |
 
 ## Credential store (done)
@@ -109,6 +109,16 @@ The macOS side is the code that was there before, moved into one place. Dotfile 
 
 Checked on the test machine with real Claude Code logs (2,281 files): worktree costs now land on the main repository (for example 3.06 + 1.03 = 4.09 USD for one repository whose worktree was listed separately before), the file count is unchanged, and a second run reads only what changed (2 s instead of 35 s). Self-test: Windows passes everything except the 11 Codex items; macOS 15.6 passes all 45.
 
+## Adding an account (done)
+
+`AIUsageMaster --add-account` (and the menu item on macOS) calls `addClaudeAccount()`: it creates `~/.config/usagemaster/claude/acct-<timestamp>` and opens the sign-in window. On Windows that is a command prompt started with `cmd /c start`, running a generated `.cmd` that:
+
+- switches the console to UTF-8 (`chcp 65001`) before printing anything, because the default code page of a Chinese Windows install is 936 and the instructions would otherwise be garbled;
+- sets `CLAUDE_CONFIG_DIR` to the new folder and `BROWSER` to a second `.cmd` that passes the URL on untouched to Chrome `--incognito`, or Edge `--inprivate`, or the default browser;
+- runs `claude auth login --claudeai`, then `claude auth status --text`, and waits for a key.
+
+Characters that mean something to `echo` in cmd (`^ & | < > ( )`, `%`) are escaped. Checked on the test machine: the sign-in completed, `.credentials.json` (with a refresh token) and `.claude.json` (with the account profile) appeared in the new folder, and `--print` then listed the account with its 5-hour and weekly usage. The macOS script is unchanged.
+
 ## Not tested yet
 
 - Whether a running session refreshes `oauthAccount` from `~/.claude.json` after a switch. This only affects the name it shows, not which account it uses.
@@ -117,7 +127,7 @@ Checked on the test machine with real Claude Code logs (2,281 files): worktree c
 
 ## Plan
 
-1. Keep one Swift codebase. Put the items above behind small platform files (credential store and paths: done; Codex process handling, notifications and the login terminal: next) and leave everything else shared.
+1. Keep one Swift codebase. Put the items above behind small platform files (credential store, paths and the login terminal: done; Codex process handling and notifications: next) and leave everything else shared.
 2. First Windows release: the command line (`--print`, `--stats`, `--selftest`) and the Claude Code status line, which shows usage inside the terminal without any tray UI.
 3. Then a tray icon drawn on the fly with the tightest percentage (same orange at 75% and red at 90%), the summary line as the tooltip, and a flyout panel with the per-account bars. It can be a thin shell that calls the core for JSON, so the UI stays separate from the logic. Start at login through `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`.
 4. Switching last, with the Orca rule above, since Orca already manages accounts on many Windows machines.

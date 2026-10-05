@@ -30,7 +30,7 @@ I use several Claude accounts and I use them a lot, so one of them is always run
 - **Cost and project statistics.** Reads this Mac's Claude Code logs (token counts only, never the conversation text) and prices them at Claude API list prices: today, this month, the last 30 days, the top projects, and an HTML report by project, model and session. Enter what you pay for your subscriptions and it also shows roughly how much they saved you. It is an estimate at API prices, not a bill.
 - **Claude Code status line.** Optional. Turn on "Show Usage in Claude Code Status Line" in the menu and Claude Code shows a line like `Opus 5.5 │ $1.23 │ ● Personal 5h 20%↻00:20 wk 12% │ Work 5h 100%↻00:30`. Your existing status line command keeps running, and its output comes first when it answers within 0.3 seconds. The live numbers Claude Code hands to the status line also feed the menu bar, so fewer usage requests are needed. `~/.claude/settings.json` is backed up before every change, and turning it off restores what was there.
 - **Follows your system language.** Chinese when macOS's preferred language is Chinese, English otherwise.
-- **Command line.** `AIUsageMaster --print` prints the current numbers once. `AIUsageMaster --selftest` runs the self-checks for the switching rules. `AIUsageMaster --stats` prints the cost statistics and writes the HTML report. `--install-statusline` and `--uninstall-statusline` do the same as the menu item.
+- **Command line.** `AIUsageMaster --print` prints the current numbers once. `AIUsageMaster --selftest` runs the self-checks for the switching rules. `AIUsageMaster --stats` prints the cost statistics and writes the HTML report. `--install-statusline` and `--uninstall-statusline` do the same as the menu item. `AIUsageMaster --add-account` opens the sign-in window for a new Claude account, the same as **Add Claude Account…**.
 
 ## Install
 
@@ -48,7 +48,7 @@ To stop starting at login: `launchctl bootout gui/$(id -u)/io.github.wxy821018.u
 
 ## Adding accounts
 
-Choose **Add Claude Account…** in the menu. A Terminal window runs the official `claude auth login` against a dedicated config directory, `~/.config/usagemaster/claude/<name>/`. The sign-in page opens in a Chrome incognito window, so an account that is already signed in to your browser does not get in the way of adding a different one.
+Choose **Add Claude Account…** in the menu. A Terminal window runs the official `claude auth login` against a dedicated config directory, `~/.config/usagemaster/claude/<name>/`. The sign-in page opens in a Chrome incognito window, so an account that is already signed in to your browser does not get in the way of adding a different one. On Windows (port in progress) run `AIUsageMaster --add-account`: a command prompt window runs the same sign-in, and the page opens in a Chrome incognito window (Edge InPrivate when Chrome is not installed).
 
 - Adding the same account twice keeps the first copy and removes the duplicate.
 - To change the name shown in the menu, put a `label` file in the account directory, for example `echo Work > ~/.config/usagemaster/claude/acct-xxx/label`.
@@ -87,7 +87,7 @@ Choose **Add Claude Account…** in the menu. A Terminal window runs the officia
 ## Known limitations
 
 - A personal project, not affiliated with Anthropic or Cursor. The endpoints it uses are not publicly documented and may change at any time.
-- macOS only for now. On Windows, Claude Code keeps credentials in `%USERPROFILE%\.claude\.credentials.json` (or in the `CLAUDE_CONFIG_DIR` directory when that is set), and Cursor keeps its database at `%APPDATA%\Cursor\User\globalStorage\state.vscdb`. A port is under way: the non-UI code already builds with Swift 6.4 for Windows and runs `--print` and `--stats` there, credential storage, account switching, usage history and cost statistics pass the self-test on both systems; [docs/WINDOWS.md](docs/WINDOWS.md) lists what has been verified and the changes still needed.
+- macOS only for now. On Windows, Claude Code keeps credentials in `%USERPROFILE%\.claude\.credentials.json` (or in the `CLAUDE_CONFIG_DIR` directory when that is set), and Cursor keeps its database at `%APPDATA%\Cursor\User\globalStorage\state.vscdb`. A port is under way: the non-UI code already builds with Swift 6.4 for Windows and runs `--print` and `--stats` there, credential storage, account switching, usage history and cost statistics pass the self-test on both systems, and accounts can be added with `--add-account`; [docs/WINDOWS.md](docs/WINDOWS.md) lists what has been verified and the changes still needed.
 - Automatic switching only covers accounts added through AI UsageMaster.
 
 ## Roadmap

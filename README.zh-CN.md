@@ -32,7 +32,7 @@
 - **费用和项目统计**：读本机 Claude Code 的日志（只读 token 数，不读对话内容），按 Claude API 标价折算：今天、本月、最近 30 天、最花钱的几个项目，还能生成按项目、模型、会话细分的 HTML 报告。填上你每月实际付的订阅费，还会算出订阅大概帮你省了多少。这是按 API 价的估算，不是账单。
 - **Claude Code 状态栏**（可选）：在菜单里勾上「在 Claude Code 状态栏显示用量」，Claude Code 底部会显示一行，比如 `Opus 5.5 │ $1.23 │ ● 个人 5h 20%↻00:20 周 12% │ 工作 5h 100%↻00:30`。你原来的状态栏命令照常执行，它在 0.3 秒内给出的输出排在前面。Claude Code 交给状态栏的实时用量也会被菜单栏直接用上，少查几次用量接口。每次改 `~/.claude/settings.json` 之前都会备份，关掉时原样还原。
 - **语言跟随系统**：macOS 首选语言是中文就显示中文，否则显示英文。
-- **命令行**：`AIUsageMaster --print` 打印一次当前数据；`AIUsageMaster --selftest` 跑自动切换规则的自检；`AIUsageMaster --stats` 打印费用统计并生成 HTML 报告；`--install-statusline` / `--uninstall-statusline` 和菜单里那一项作用相同。
+- **命令行**：`AIUsageMaster --print` 打印一次当前数据；`AIUsageMaster --selftest` 跑自动切换规则的自检；`AIUsageMaster --stats` 打印费用统计并生成 HTML 报告；`--install-statusline` / `--uninstall-statusline` 和菜单里那一项作用相同；`AIUsageMaster --add-account` 打开新 Claude 账号的登录窗口，和「添加 Claude 账号…」相同。
 
 ## 安装
 
@@ -50,7 +50,7 @@ open "$HOME/Applications/AI UsageMaster.app"
 
 ## 添加账号
 
-菜单里点「添加 Claude 账号…」。它会打开终端，用官方的 `claude auth login` 登录到一个专用的配置目录（`~/.config/usagemaster/claude/<名字>/`）。授权页会在 Chrome 无痕窗口里打开，这样浏览器里已经登录的账号不会挡住你登录另一个账号。
+菜单里点「添加 Claude 账号…」。它会打开终端，用官方的 `claude auth login` 登录到一个专用的配置目录（`~/.config/usagemaster/claude/<名字>/`）。授权页会在 Chrome 无痕窗口里打开，这样浏览器里已经登录的账号不会挡住你登录另一个账号。Windows（移植中）上运行 `AIUsageMaster --add-account`：会打开一个命令提示符窗口跑同样的登录，授权页在 Chrome 无痕窗口里打开（没装 Chrome 时用 Edge InPrivate）。
 
 - 同一个账号重复添加时，只保留最早那份，多出来的会自动删掉。
 - 想改菜单上的显示名，在账号目录里放一个 `label` 文件，内容写你想要的名字，比如 `echo 工作 > ~/.config/usagemaster/claude/acct-xxx/label`。
@@ -89,7 +89,7 @@ open "$HOME/Applications/AI UsageMaster.app"
 ## 已知限制
 
 - 这是一个个人项目，和 Anthropic、Cursor 没有任何关系。用到的接口不是公开文档里的接口，厂商随时可能调整。
-- 目前只支持 macOS。Windows 上 Claude Code 的凭据在 `%USERPROFILE%\.claude\.credentials.json`（带 `CLAUDE_CONFIG_DIR` 时在该目录下），Cursor 的在 `%APPDATA%\Cursor\User\globalStorage\state.vscdb`，Windows 版正在移植：界面以外的代码已能用 Swift 6.4 在 Windows 上编译，`--print` 和 `--stats` 能运行，凭据存储、账号切换、用量历史和费用统计的自检在两个系统上都已通过；已实测的内容和还要改的地方见 [docs/WINDOWS.md](docs/WINDOWS.md)。
+- 目前只支持 macOS。Windows 上 Claude Code 的凭据在 `%USERPROFILE%\.claude\.credentials.json`（带 `CLAUDE_CONFIG_DIR` 时在该目录下），Cursor 的在 `%APPDATA%\Cursor\User\globalStorage\state.vscdb`，Windows 版正在移植：界面以外的代码已能用 Swift 6.4 在 Windows 上编译，`--print` 和 `--stats` 能运行，凭据存储、账号切换、用量历史和费用统计的自检在两个系统上都已通过，可以用 `--add-account` 加账号；已实测的内容和还要改的地方见 [docs/WINDOWS.md](docs/WINDOWS.md)。
 - 自动切换只对通过 UsageMaster 添加的账号生效。
 
 ## 路线图
