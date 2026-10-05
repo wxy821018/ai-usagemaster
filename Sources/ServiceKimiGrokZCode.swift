@@ -12,20 +12,23 @@
 //   GET <origin>/api/monitor/usage/quota/limit，Authorization 直接是 key（不加 Bearer）。
 
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking   // Windows / Linux 上 URLSession 在这个模块里
+#endif
 
 // MARK: - 三家共用的小工具
 
 enum KimiGrokZCode {
     /// JSON 数字。排除 true/false：JSONSerialization 把布尔也解成 NSNumber，而 Orca 用 typeof === 'number' 判断
     static func number(_ v: Any?) -> Double? {
-        guard let n = v as? NSNumber, CFGetTypeID(n as CFTypeRef) != CFBooleanGetTypeID() else { return nil }
+        guard let n = v as? NSNumber, !isJSONBool(n) else { return nil }
         let d = n.doubleValue
         return d.isFinite ? d : nil
     }
 
     /// 严格的 JSON true（数字 1 不算）
     static func isJSONTrue(_ v: Any?) -> Bool {
-        guard let n = v as? NSNumber, CFGetTypeID(n as CFTypeRef) == CFBooleanGetTypeID() else { return false }
+        guard let n = v as? NSNumber, isJSONBool(n) else { return false }
         return n.boolValue
     }
 

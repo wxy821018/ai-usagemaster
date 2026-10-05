@@ -3,9 +3,13 @@
 // - 用 UNUserNotificationCenter 发（能点：建议切换的那几种，点通知就切过去）；没有通知权限时退回 osascript。
 // - evaluateAlerts 是纯函数，--selftest 里有用例。
 
+#if canImport(AppKit)
 import AppKit
+#endif
 import Foundation
+#if canImport(UserNotifications)
 import UserNotifications
+#endif
 
 enum AlertType: String, CaseIterable {
     case threshold, pace, exhausted, allExhausted, recovered, expiring, relogin, cursor, resets, switched
@@ -156,7 +160,9 @@ func evaluateAlerts(accounts: [ClaudeAccount], cursor: CursorUsage?, autoMode: B
     return (out, usable)
 }
 
-// MARK: - 发送
+// MARK: - 发送（macOS：UNUserNotificationCenter；Windows 版还没有系统通知）
+
+#if os(macOS)
 
 @MainActor
 final class AlertCenter: NSObject, UNUserNotificationCenterDelegate {
@@ -243,3 +249,5 @@ final class AlertCenter: NSObject, UNUserNotificationCenterDelegate {
         completionHandler()
     }
 }
+
+#endif

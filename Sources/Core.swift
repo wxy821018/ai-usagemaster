@@ -1,8 +1,17 @@
 // 数据模型与通用工具：网络会话（不落盘）、钥匙串读写、时间格式化、子进程
 
+#if canImport(AppKit)
 import AppKit
+#endif
+#if canImport(CryptoKit)
 import CryptoKit
+#else
+import Crypto
+#endif
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking   // Windows / Linux 上 URLSession 在这个模块里
+#endif
 import SQLite3
 
 // MARK: - 界面语言
@@ -277,4 +286,27 @@ final class NoRedirect: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
                     newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
         completionHandler(nil)
     }
+}
+
+// MARK: - 显示用的小工具（菜单与命令行共用）
+
+/// 渲染时按"现在"重新判断窗口是否已经过了重置时间（抓取后过了重置点，就按 0% 显示）
+func effective(_ w: UsageWindow, _ now: Date) -> (pct: Double, reset: Bool) {
+    if w.wasReset { return (0, true) }
+    if let r = w.resetsAt, r <= now { return (0, true) }
+    return (w.percent, false)
+}
+
+func bindingWindow(_ a: ClaudeAccount, _ now: Date) -> UsageWindow? {
+    if let w = a.windows.first(where: { $0.isActive && !effective($0, now).reset }) { return w }   // 服务端标出的那一行
+    return a.windows.max(by: { effective($0, now).pct < effective($1, now).pct })
+}
+
+func usd(_ v: Double) -> String {
+    if v < 0 { return "-" + usd(-v) }
+    if abs(v) >= 1000 {
+        let f = NumberFormatter(); f.numberStyle = .decimal; f.maximumFractionDigits = 0; f.locale = Locale(identifier: "en_US")
+        return "$" + (f.string(from: NSNumber(value: v)) ?? String(format: "%.0f", v))
+    }
+    return String(format: "$%.2f", v)
 }

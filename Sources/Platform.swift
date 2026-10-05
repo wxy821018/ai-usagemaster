@@ -144,6 +144,53 @@ func writeFD(_ fd: Int32, _ buf: UnsafeRawPointer, _ n: Int) -> Int {
     #endif
 }
 
+// MARK: - 进程
+
+/// 强制结束一个进程（macOS SIGKILL，Windows TerminateProcess）
+func forceKill(_ pid: Int32) {
+    #if os(Windows)
+    guard let h = OpenProcess(DWORD(PROCESS_TERMINATE), false, DWORD(pid)) else { return }
+    defer { CloseHandle(h) }
+    _ = TerminateProcess(h, 1)
+    #else
+    _ = kill(pid, SIGKILL)
+    #endif
+}
+
+/// 进程还在不在
+func processAlive(_ pid: Int32) -> Bool {
+    #if os(Windows)
+    guard let h = OpenProcess(DWORD(PROCESS_QUERY_LIMITED_INFORMATION), false, DWORD(pid)) else { return false }
+    defer { CloseHandle(h) }
+    var code: DWORD = 0
+    return GetExitCodeProcess(h, &code) && code == DWORD(STILL_ACTIVE)
+    #else
+    return kill(pid, 0) == 0
+    #endif
+}
+
+// MARK: - 小工具
+
+/// JSON 里的 true/false：JSONSerialization 把布尔也解成 NSNumber，和数字 0/1 要分开。
+/// macOS 用 CoreFoundation 的类型 ID；Windows 版 Foundation 没有公开的 CoreFoundation，看 objCType（布尔是 "c"，整数 "i"/"q"，小数 "d"）
+func isJSONBool(_ n: NSNumber) -> Bool {
+    #if os(Windows)
+    return String(cString: n.objCType) == "c"
+    #else
+    return CFGetTypeID(n) == CFBooleanGetTypeID()
+    #endif
+}
+
+/// 显示用的路径：主目录换成 ~
+func abbreviatedPath(_ p: String) -> String {
+    #if os(Windows)
+    let home = NSHomeDirectory()
+    return p.hasPrefix(home) ? "~" + p.dropFirst(home.count) : p
+    #else
+    return (p as NSString).abbreviatingWithTildeInPath
+    #endif
+}
+
 // MARK: - Windows 上缺的几个函数
 
 #if os(Windows)

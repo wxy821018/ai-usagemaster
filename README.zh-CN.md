@@ -48,6 +48,20 @@ open "$HOME/Applications/AI UsageMaster.app"
 
 取消开机自启：`launchctl bootout gui/$(id -u)/io.github.wxy821018.usagemaster && rm ~/Library/LaunchAgents/io.github.wxy821018.usagemaster.plist`
 
+### Windows（命令行版，移植中）
+
+还没有托盘图标，Windows 版目前是命令行（`--print`、`--stats`、`--add-account`、`--selftest`）。需要 Swift 工具链（`winget install Swift.Toolchain`）和带 C++ 工具与 Windows SDK 的 Visual Studio Build Tools。
+
+```powershell
+git clone https://github.com/wxy821018/ai-usagemaster.git
+cd ai-usagemaster
+powershell -ExecutionPolicy Bypass -File build.ps1 -AddToPath   # 编译并安装到 %LOCALAPPDATA%\Programs\AI UsageMaster
+AIUsageMaster --add-account                                     # 在新开的终端窗口里运行
+AIUsageMaster --print
+```
+
+Swift 运行库会一起拷到 `AIUsageMaster.exe` 旁边，所以装好的目录拿到没装 Swift 的电脑上也能运行。哪些能用、哪些还没做，见 [docs/WINDOWS.md](docs/WINDOWS.md)。
+
 ## 添加账号
 
 菜单里点「添加 Claude 账号…」。它会打开终端，用官方的 `claude auth login` 登录到一个专用的配置目录（`~/.config/usagemaster/claude/<名字>/`）。授权页会在 Chrome 无痕窗口里打开，这样浏览器里已经登录的账号不会挡住你登录另一个账号。Windows（移植中）上运行 `AIUsageMaster --add-account`：会打开一个命令提示符窗口跑同样的登录，授权页在 Chrome 无痕窗口里打开（没装 Chrome 时用 Edge InPrivate）。
@@ -89,7 +103,7 @@ open "$HOME/Applications/AI UsageMaster.app"
 ## 已知限制
 
 - 这是一个个人项目，和 Anthropic、Cursor 没有任何关系。用到的接口不是公开文档里的接口，厂商随时可能调整。
-- 目前只支持 macOS。Windows 上 Claude Code 的凭据在 `%USERPROFILE%\.claude\.credentials.json`（带 `CLAUDE_CONFIG_DIR` 时在该目录下），Cursor 的在 `%APPDATA%\Cursor\User\globalStorage\state.vscdb`，Windows 版正在移植：界面以外的代码已能用 Swift 6.4 在 Windows 上编译，`--print` 和 `--stats` 能运行，凭据存储、账号切换、用量历史和费用统计的自检在两个系统上都已通过，可以用 `--add-account` 加账号；已实测的内容和还要改的地方见 [docs/WINDOWS.md](docs/WINDOWS.md)。
+- 目前只支持 macOS。Windows 上 Claude Code 的凭据在 `%USERPROFILE%\.claude\.credentials.json`（带 `CLAUDE_CONFIG_DIR` 时在该目录下），Cursor 的在 `%APPDATA%\Cursor\User\globalStorage\state.vscdb`，Windows 版正在移植：界面以外的代码已能用 Swift 6.4 在 Windows 上编译，`--print` 和 `--stats` 能运行，仓库里用 `build.ps1` 就能直接编译安装，凭据存储、账号切换、用量历史和费用统计的自检在两个系统上都已通过，可以用 `--add-account` 加账号；已实测的内容和还要改的地方见 [docs/WINDOWS.md](docs/WINDOWS.md)。
 - 自动切换只对通过 UsageMaster 添加的账号生效。
 
 ## 路线图

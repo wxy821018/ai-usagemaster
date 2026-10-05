@@ -1,7 +1,13 @@
 // 自动切换规则与提前重置检测
 
+#if canImport(AppKit)
 import AppKit
+#endif
+#if canImport(CryptoKit)
 import CryptoKit
+#else
+import Crypto
+#endif
 import Foundation
 import SQLite3
 

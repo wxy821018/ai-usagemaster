@@ -11,8 +11,13 @@
 // 不实现"消耗重置额度"（POST .../rate-limit-reset-credits/consume）——那是写操作。
 // 令牌只在内存里，不打印、不写日志、不进错误信息；子进程的 stderr 只用来判断错误类型，摘录前先打码。
 
+#if canImport(Darwin)
 import Darwin
+#endif
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking   // Windows / Linux 上 URLSession 在这个模块里
+#endif
 import SQLite3
 
 struct CodexService: UsageService {
@@ -149,7 +154,7 @@ struct CodexService: UsageService {
 
     /// 只认 JSON 数字（排除 true/false 与非有限值）
     static func finite(_ v: Any?) -> Double? {
-        guard let n = v as? NSNumber, CFGetTypeID(n) != CFBooleanGetTypeID() else { return nil }
+        guard let n = v as? NSNumber, !isJSONBool(n) else { return nil }
         let d = n.doubleValue
         return d.isFinite ? d : nil
     }
@@ -492,6 +497,10 @@ struct CodexService: UsageService {
         private func writeLocked(_ obj: [String: Any]) -> Bool {
             guard stdinOpen, var d = try? JSONSerialization.data(withJSONObject: obj, options: [.withoutEscapingSlashes]) else { return false }
             d.append(0x0A)
+            #if os(Windows)
+            // Windows 的 Foundation 不给 Pipe 的文件描述符；也没有 SIGPIPE，直接用 FileHandle 写
+            do { try stdin.write(contentsOf: d); return true } catch { return false }
+            #else
             let fd = stdin.fileDescriptor
             return d.withUnsafeBytes { (raw: UnsafeRawBufferPointer) -> Bool in
                 guard let base = raw.baseAddress else { return false }
@@ -506,6 +515,7 @@ struct CodexService: UsageService {
                 }
                 return true
             }
+            #endif
         }
 
         func start() {
@@ -515,7 +525,7 @@ struct CodexService: UsageService {
         }
 
         static func intId(_ v: Any?) -> Int? {
-            if let n = v as? NSNumber, CFGetTypeID(n) != CFBooleanGetTypeID() { return n.intValue }
+            if let n = v as? NSNumber, !isJSONBool(n) { return n.intValue }
             if let s = v as? String { return Int(s) }
             return nil
         }
@@ -609,7 +619,9 @@ struct CodexService: UsageService {
         p.standardInput = inPipe
         p.standardOutput = outPipe
         p.standardError = errPipe
+        #if !os(Windows)   // Windows 没有 SIGPIPE
         _ = fcntl(inPipe.fileHandleForWriting.fileDescriptor, F_SETNOSIGPIPE, 1)
+        #endif
         let s = RPCSession(stdin: inPipe.fileHandleForWriting)
         let exited = DispatchSemaphore(value: 0)
         p.terminationHandler = { _ in exited.signal() }
@@ -645,7 +657,7 @@ struct CodexService: UsageService {
         s.closeStdin()
         if p.isRunning { p.terminate() }
         if exited.wait(timeout: .now() + killGrace) == .timedOut, p.isRunning {
-            kill(p.processIdentifier, SIGKILL)
+            forceKill(p.processIdentifier)
             _ = exited.wait(timeout: .now() + 2)
         }
         _ = s.errClosed.wait(timeout: .now() + 1)       // 等 stderr 读完，好判断错误类型
@@ -1075,9 +1087,9 @@ struct CodexService: UsageService {
             } else { fails.append(L("假 app-server：不回应应判 failed", "Fake app-server: no response should give failed")) }
             check(Date().timeIntervalSince(t1) < 4.5, L("假 app-server：超时后应在宽限期内结束", "Fake app-server: should end within the grace period after a timeout"))
             if let s = try? String(contentsOfFile: pidFile, encoding: .utf8), let pid = Int32(s.trimmingCharacters(in: .whitespacesAndNewlines)) {
-                let alive = kill(pid, 0) == 0
+                let alive = processAlive(pid)
                 check(!alive, L("假 app-server：忽略 SIGTERM 的进程应被 SIGKILL 收掉", "Fake app-server: a process that ignores SIGTERM should be killed with SIGKILL"))
-                if alive { kill(pid, SIGKILL) }
+                if alive { forceKill(pid) }
             } else { fails.append(L("假 app-server：没拿到进程号", "Fake app-server: no process ID")) }
 
             let early = tmp + "/fake-early.sh"

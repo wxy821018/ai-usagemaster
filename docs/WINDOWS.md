@@ -63,11 +63,11 @@ Found by the trial build and self-test. Each is a small, local change; none touc
 | ~~`TokenStats.swift`~~ | ~~`st_mtimespec` (nanoseconds)~~ | **Done**, see "Paths and file handling" below |
 | ~~`TokenStats.swift` worktree lookup~~ | ~~Absolute means "starts with `/`"~~ | **Done**, see "Paths and file handling" below |
 | ~~`TokenStats.swift`~~ | ~~`realpath`, `memmem`, `autoreleasepool`~~ | **Done**, see "Paths and file handling" below |
-| `ServiceCodex.swift` | Finds `codex` via `:`-separated `PATH` and nvm folders; writes to the app-server through a file descriptor; `kill`, `fcntl(F_SETNOSIGPIPE)` | `;`-separated `PATH` and `codex.cmd`/`.exe`; `FileHandle.write(contentsOf:)`; `TerminateProcess`; no SIGPIPE. The self-test's fake app-server is a `/bin/sh` script and needs a `.cmd` version |
-| `ServiceCodex.swift`, `ServiceKimiGrokZCode.swift` | `CFGetTypeID(n) != CFBooleanGetTypeID()` to tell JSON booleans from numbers | No public CoreFoundation; check `objCType`. The same test appears three times and can become one helper |
-| `ServiceGemini.swift` | `abbreviatingWithTildeInPath` | Not in Windows Foundation; one small extension |
-| `App.swift` | Holds `effective()`, `bindingWindow()` and `usd()`, which other files call | Move them into the core so the core builds without the UI |
-| `Alerts.swift` | Rules and macOS delivery (`AlertCenter`) in one file | Split at `// MARK: - 发送`: rules shared, delivery per platform (Windows toast) |
+| `ServiceCodex.swift` | Finds `codex` via `:`-separated `PATH` and nvm folders; the self-test's fake app-server is a `/bin/sh` script | **Builds and runs on Windows** (stdin through `FileHandle`, `forceKill` / `processAlive`, no SIGPIPE setup). Still to do: look up `codex.cmd` / `codex.exe` on a `;`-separated `PATH`, and `.cmd` fakes for the self-test (the 11 Codex self-test failures on Windows) |
+| ~~`ServiceCodex.swift`, `ServiceKimiGrokZCode.swift`~~ | ~~`CFGetTypeID(n) != CFBooleanGetTypeID()` to tell JSON booleans from numbers~~ | **Done**, see "Building on Windows" below |
+| ~~`ServiceGemini.swift`~~ | ~~`abbreviatingWithTildeInPath`~~ | **Done**, see "Building on Windows" below |
+| ~~`App.swift`~~ | ~~Holds `effective()`, `bindingWindow()` and `usd()`, which other files call~~ | **Done**, see "Building on Windows" below |
+| ~~`Alerts.swift`~~ | ~~Rules and macOS delivery (`AlertCenter`) in one file~~ | **Done** for building; Windows delivery (toast) is still to do |
 | ~~`Claude.swift` `openLoginTerminal`~~ | ~~`.command` script opened with `NSWorkspace`~~ | **Done**, see "Adding an account" below |
 | ~~Data and cache paths~~ | ~~`~/Library/Application Support/UsageMaster`, `~/Library/Application Support/Cursor`, `~/Library/Application Support/orca`~~ | **Done**, see "Paths and file handling" below |
 
@@ -119,6 +119,16 @@ Checked on the test machine with real Claude Code logs (2,281 files): worktree c
 
 Characters that mean something to `echo` in cmd (`^ & | < > ( )`, `%`) are escaped. Checked on the test machine: the sign-in completed, `.credentials.json` (with a refresh token) and `.claude.json` (with the account profile) appeared in the new folder, and `--print` then listed the account with its 5-hour and weekly usage. The macOS script is unchanged.
 
+## Building on Windows (done)
+
+The repository now builds on Windows without patches: `build.ps1` runs `swift build -c release` through `Package.swift` and installs to `%LOCALAPPDATA%\Programs\AI UsageMaster`. macOS still builds with `build.sh` and `swiftc`; `Package.swift` is not used there.
+
+- Apple-only imports (`AppKit`, `UserNotifications`, `Darwin`, `Security`) are behind `#if canImport`; `CryptoKit` falls back to swift-crypto (pinned in `Package.resolved`); files that use `URLSession` import `FoundationNetworking` where it exists.
+- SQLite comes from Windows itself (`System32\winsqlite3.dll`, header and import library in the Windows SDK), wrapped in `windows/SQLite3/module.modulemap` as a module named `SQLite3`, so `import SQLite3` is the same on both systems.
+- `App.swift` (the menu bar UI) only builds on macOS. `effective()`, `bindingWindow()` and `usd()` moved to `Core.swift`. The alert rules in `Alerts.swift` are shared; the macOS delivery (`AlertCenter`) is macOS only. Without arguments the Windows build prints its commands.
+- New helpers in `Platform.swift`: `isJSONBool` (the three copies of the JSON boolean check are now one; on Windows it reads `objCType`, which is `c` for JSON booleans), `abbreviatedPath`, `forceKill`, `processAlive`.
+- `build.ps1` copies the Swift runtime DLLs next to the executable (about 80 MB in total). Checked by running the installed copy with `PATH` reduced to `C:\Windows\System32;C:\Windows`: the self-test gives the same result (everything except the 11 Codex items), and `--print` and `--stats` work on real data. `-AddToPath` adds the folder to the user `PATH`.
+
 ## Not tested yet
 
 - Whether a running session refreshes `oauthAccount` from `~/.claude.json` after a switch. This only affects the name it shows, not which account it uses.
@@ -127,7 +137,7 @@ Characters that mean something to `echo` in cmd (`^ & | < > ( )`, `%`) are escap
 
 ## Plan
 
-1. Keep one Swift codebase. Put the items above behind small platform files (credential store, paths and the login terminal: done; Codex process handling and notifications: next) and leave everything else shared.
-2. First Windows release: the command line (`--print`, `--stats`, `--selftest`) and the Claude Code status line, which shows usage inside the terminal without any tray UI.
+1. Keep one Swift codebase. Put the items above behind small platform files (credential store, paths, the login terminal and a native Windows build: done; Codex lookup, the status line on Windows and notifications: next) and leave everything else shared.
+2. First Windows release: the command line (`--print`, `--stats`, `--add-account`, `--selftest`; builds and installs with `build.ps1`) and the Claude Code status line, which shows usage inside the terminal without any tray UI (not tested on Windows yet).
 3. Then a tray icon drawn on the fly with the tightest percentage (same orange at 75% and red at 90%), the summary line as the tooltip, and a flyout panel with the per-account bars. It can be a thin shell that calls the core for JSON, so the UI stays separate from the logic. Start at login through `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`.
 4. Switching last, with the Orca rule above, since Orca already manages accounts on many Windows machines.

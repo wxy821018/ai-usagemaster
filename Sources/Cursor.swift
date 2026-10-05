@@ -1,8 +1,17 @@
 // Cursor：本期用量
 
+#if canImport(AppKit)
 import AppKit
+#endif
+#if canImport(CryptoKit)
 import CryptoKit
+#else
+import Crypto
+#endif
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking   // Windows / Linux 上 URLSession 在这个模块里
+#endif
 import SQLite3
 
 // MARK: - Cursor

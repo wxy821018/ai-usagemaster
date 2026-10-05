@@ -12,6 +12,9 @@
 // 不打印、不进错误信息。
 
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking   // Windows / Linux 上 URLSession 在这个模块里
+#endif
 import SQLite3
 
 // MARK: - UsageMaster 自己存的 API key（条目 "UsageMaster-<服务>"）

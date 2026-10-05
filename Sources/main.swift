@@ -16,8 +16,14 @@
 // 终端看一次："~/Applications/AI UsageMaster.app/Contents/MacOS/AIUsageMaster" --print
 
 
+#if canImport(AppKit)
 import AppKit
+#endif
+#if canImport(CryptoKit)
 import CryptoKit
+#else
+import Crypto
+#endif
 import Foundation
 import SQLite3
 
@@ -335,6 +341,7 @@ if CommandLine.arguments.contains("--print") {
     exit(exitCode)
 }
 
+#if os(macOS)
 MainActor.assumeIsolated {
     let app = NSApplication.shared
     app.setActivationPolicy(.accessory)   // 只在菜单栏，不占 Dock
@@ -342,3 +349,17 @@ MainActor.assumeIsolated {
     app.delegate = delegate          // NSApplication.delegate 是弱引用，下面显式保活
     withExtendedLifetime(delegate) { app.run() }
 }
+#else
+// Windows 版还没有托盘界面：不带参数运行时说明用法
+print(L("AI UsageMaster（Windows 版，命令行）\n"
+        + "  --print          打印各账号当前用量\n"
+        + "  --stats          打印本机 Claude Code 日志折合的 API 费用，并生成 HTML 报告\n"
+        + "  --add-account    添加一个 Claude 账号（打开登录窗口）\n"
+        + "  --selftest       运行自检",
+        "AI UsageMaster (Windows, command line)\n"
+        + "  --print          print current usage for each account\n"
+        + "  --stats          print API-equivalent cost from local Claude Code logs and write the HTML report\n"
+        + "  --add-account    add a Claude account (opens the sign-in window)\n"
+        + "  --selftest       run the self-tests"))
+exit(0)
+#endif

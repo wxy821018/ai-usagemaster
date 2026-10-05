@@ -1,3 +1,5 @@
+#if os(macOS)   // 菜单栏界面只有 macOS 版；Windows 版先用命令行
+
 // 菜单栏界面
 
 import AppKit
@@ -7,17 +9,6 @@ import SQLite3
 
 // MARK: - 菜单栏
 
-/// 渲染时按"现在"重新判断窗口是否已经过了重置时间（抓取后过了重置点，就按 0% 显示）
-func effective(_ w: UsageWindow, _ now: Date) -> (pct: Double, reset: Bool) {
-    if w.wasReset { return (0, true) }
-    if let r = w.resetsAt, r <= now { return (0, true) }
-    return (w.percent, false)
-}
-
-func bindingWindow(_ a: ClaudeAccount, _ now: Date) -> UsageWindow? {
-    if let w = a.windows.first(where: { $0.isActive && !effective($0, now).reset }) { return w }   // 服务端标出的那一行
-    return a.windows.max(by: { effective($0, now).pct < effective($1, now).pct })
-}
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
@@ -729,11 +720,5 @@ func projectionText(_ a: ClaudeAccount, _ w: UsageWindow, _ now: Date) -> String
 }
 
 /// 金额：≥1000 带千位分隔，不带小数；负数写成 -$5.00
-func usd(_ v: Double) -> String {
-    if v < 0 { return "-" + usd(-v) }
-    if abs(v) >= 1000 {
-        let f = NumberFormatter(); f.numberStyle = .decimal; f.maximumFractionDigits = 0; f.locale = Locale(identifier: "en_US")
-        return "$" + (f.string(from: NSNumber(value: v)) ?? String(format: "%.0f", v))
-    }
-    return String(format: "$%.2f", v)
-}
+
+#endif

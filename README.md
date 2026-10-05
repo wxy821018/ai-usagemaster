@@ -46,6 +46,20 @@ open "$HOME/Applications/AI UsageMaster.app"
 
 To stop starting at login: `launchctl bootout gui/$(id -u)/io.github.wxy821018.usagemaster && rm ~/Library/LaunchAgents/io.github.wxy821018.usagemaster.plist`
 
+### Windows (command line, port in progress)
+
+There is no tray icon yet; the Windows build is the command line (`--print`, `--stats`, `--add-account`, `--selftest`). It needs the Swift toolchain (`winget install Swift.Toolchain`) and Visual Studio Build Tools with the C++ tools and a Windows SDK.
+
+```powershell
+git clone https://github.com/wxy821018/ai-usagemaster.git
+cd ai-usagemaster
+powershell -ExecutionPolicy Bypass -File build.ps1 -AddToPath   # builds and installs to %LOCALAPPDATA%\Programs\AI UsageMaster
+AIUsageMaster --add-account                                     # in a new terminal window
+AIUsageMaster --print
+```
+
+The Swift runtime is copied next to `AIUsageMaster.exe`, so the installed folder also runs on a machine without Swift. See [docs/WINDOWS.md](docs/WINDOWS.md) for what works and what is still missing.
+
 ## Adding accounts
 
 Choose **Add Claude Account…** in the menu. A Terminal window runs the official `claude auth login` against a dedicated config directory, `~/.config/usagemaster/claude/<name>/`. The sign-in page opens in a Chrome incognito window, so an account that is already signed in to your browser does not get in the way of adding a different one. On Windows (port in progress) run `AIUsageMaster --add-account`: a command prompt window runs the same sign-in, and the page opens in a Chrome incognito window (Edge InPrivate when Chrome is not installed).
@@ -87,7 +101,7 @@ Choose **Add Claude Account…** in the menu. A Terminal window runs the officia
 ## Known limitations
 
 - A personal project, not affiliated with Anthropic or Cursor. The endpoints it uses are not publicly documented and may change at any time.
-- macOS only for now. On Windows, Claude Code keeps credentials in `%USERPROFILE%\.claude\.credentials.json` (or in the `CLAUDE_CONFIG_DIR` directory when that is set), and Cursor keeps its database at `%APPDATA%\Cursor\User\globalStorage\state.vscdb`. A port is under way: the non-UI code already builds with Swift 6.4 for Windows and runs `--print` and `--stats` there, credential storage, account switching, usage history and cost statistics pass the self-test on both systems, and accounts can be added with `--add-account`; [docs/WINDOWS.md](docs/WINDOWS.md) lists what has been verified and the changes still needed.
+- macOS only for now. On Windows, Claude Code keeps credentials in `%USERPROFILE%\.claude\.credentials.json` (or in the `CLAUDE_CONFIG_DIR` directory when that is set), and Cursor keeps its database at `%APPDATA%\Cursor\User\globalStorage\state.vscdb`. A port is under way: the non-UI code already builds with Swift 6.4 for Windows and runs `--print` and `--stats` there, it builds from this repository with `build.ps1`, credential storage, account switching, usage history and cost statistics pass the self-test on both systems, and accounts can be added with `--add-account`; [docs/WINDOWS.md](docs/WINDOWS.md) lists what has been verified and the changes still needed.
 - Automatic switching only covers accounts added through AI UsageMaster.
 
 ## Roadmap

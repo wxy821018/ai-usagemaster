@@ -1,0 +1,7 @@
+// Windows 自带的 SQLite（System32\winsqlite3.dll，Windows SDK 里有头文件和导入库），
+// 包装成和 macOS SDK 同名的 SQLite3 模块，源码里的 `import SQLite3` 两边通用
+module SQLite3 [system] {
+    header "shim.h"
+    link "winsqlite3"
+    export *
+}

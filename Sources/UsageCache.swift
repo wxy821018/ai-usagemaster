@@ -4,6 +4,9 @@
 //   被 429 时按 Retry-After 退避（至少 5 分钟，连续被限流时翻倍，最多 30 分钟），期间显示上次的数据。
 
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking   // Windows / Linux 上 URLSession 在这个模块里
+#endif
 
 struct CachedWindow: Codable {
     var label: String

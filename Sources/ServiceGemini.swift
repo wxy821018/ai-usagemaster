@@ -9,8 +9,15 @@
 // （来源 Gemini CLI 开源代码 packages/core/src/code_assist/oauth2.ts，注释写明这是 installed app 的公开 client；
 //  不写进本仓库，是为了不让 GOCSPX- 开头的字面量触发 GitHub 的密钥扫描）。
 
+#if canImport(CryptoKit)
 import CryptoKit
+#else
+import Crypto
+#endif
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking   // Windows / Linux 上 URLSession 在这个模块里
+#endif
 
 // MARK: - 凭据
 
@@ -29,8 +36,8 @@ struct GeminiCredential {
     var title: String { email ?? (source == .geminiCLI ? L("Gemini CLI 登录", "Gemini CLI sign-in") : L("OpenCode 的 Google 登录", "OpenCode Google sign-in")) }
     var sourceNote: String {
         source == .geminiCLI ? L("凭据：Gemini CLI（~/.gemini/oauth_creds.json，只读）", "Credentials: Gemini CLI (~/.gemini/oauth_creds.json, read-only)")
-                             : L("凭据：OpenCode 的 Google 登录（\((path as NSString).abbreviatingWithTildeInPath)，只读）",
-                                 "Credentials: OpenCode Google sign-in (\((path as NSString).abbreviatingWithTildeInPath), read-only)")
+                             : L("凭据：OpenCode 的 Google 登录（\(abbreviatedPath(path))，只读）",
+                                 "Credentials: OpenCode Google sign-in (\(abbreviatedPath(path)), read-only)")
     }
     /// 内存令牌缓存的键：refresh token 的哈希，不拿令牌本身当键
     var cacheKey: String {
